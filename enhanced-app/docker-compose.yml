@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: enhanced-business-agent
+    ports:
+      - "8451:8451"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=sqlite+aiosqlite:///./data/enhanced_app.db
+    volumes:
+      - backend-data:/app/data
+    networks:
+      - app-network
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  chat-frontend:
+    build:
+      context: ./frontend/chat
+      dockerfile: Dockerfile
+    container_name: chat-interface
+    ports:
+      - "8450:8450"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  merchant-portal:
+    build:
+      context: ./frontend/merchant-portal
+      dockerfile: Dockerfile
+    container_name: merchant-portal
+    ports:
+      - "8452:8451"  # Expose on 8452 to avoid conflict
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

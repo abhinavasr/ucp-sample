@@ -19,6 +19,26 @@
 This directory contains sample implementations and client scripts for the
 Universal Commerce Protocol (UCP).
 
+## Featured Applications
+
+### Enhanced Business Agent (NEW!)
+
+A production-ready AI-powered shopping assistant with merchant portal capabilities.
+
+*   **Application**: [Documentation](enhanced-app/README.md)
+    *   Located in `enhanced-app/`.
+    *   **Features**:
+        *   🤖 AI Chat Interface with Ollama integration (Qwen/Gemma models)
+        *   🏪 Merchant Portal for product and pricing management
+        *   💾 Persistent SQLite database
+        *   🎨 Beautiful modern UI with React and Tailwind CSS
+        *   🔧 RESTful API with FastAPI
+        *   📦 Extends existing business_agent and chat-client functionality
+    *   **Ports**:
+        *   Port 8450 → Chat Interface (maps to https://chat.abhinava.xyz)
+        *   Port 8451 → Merchant Portal + API (maps to https://app.abhinava.xyz)
+    *   Quick start: `cd enhanced-app && ./start.sh`
+
 ## Sample Implementations
 
 ### Python
