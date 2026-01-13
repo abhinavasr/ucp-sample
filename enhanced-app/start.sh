@@ -14,6 +14,10 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Create necessary directories
+mkdir -p logs
+mkdir -p pids
+
 # Check if Ollama is running
 echo -e "${BLUE}Checking Ollama connection...${NC}"
 if curl -s http://localhost:11434/api/version > /dev/null 2>&1; then
@@ -44,11 +48,16 @@ cd backend
 # Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
-    python -m venv venv
+    python3 -m venv venv || python -m venv venv
 fi
 
 # Activate virtual environment
-source venv/bin/activate
+if [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate
+else
+    echo -e "${YELLOW}⚠ Error: Failed to create virtual environment${NC}"
+    exit 1
+fi
 
 # Install dependencies
 echo "Installing Python dependencies..."
@@ -119,10 +128,6 @@ echo "   Backend:         tail -f logs/backend.log"
 echo "   Chat:            tail -f logs/chat.log"
 echo "   Merchant Portal: tail -f logs/merchant.log"
 echo ""
-
-# Create logs directory
-mkdir -p logs
-mkdir -p pids
 
 # Wait for Ctrl+C
 trap 'echo -e "\n${YELLOW}Stopping all services...${NC}"; kill $BACKEND_PID $CHAT_PID $MERCHANT_PID 2>/dev/null; rm -f pids/*.pid; echo -e "${GREEN}✓ All services stopped${NC}"; exit 0' INT
