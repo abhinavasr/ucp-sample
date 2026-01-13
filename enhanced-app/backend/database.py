@@ -5,6 +5,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import json
+import os
 
 Base = declarative_base()
 
@@ -90,4 +91,6 @@ class DatabaseManager:
 
 
 # Global database manager instance
-db_manager = DatabaseManager()
+# Get database URL from environment variable or use default
+database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./enhanced_app.db")
+db_manager = DatabaseManager(database_url)

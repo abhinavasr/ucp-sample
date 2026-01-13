@@ -49,7 +49,33 @@ ollama pull gemma2:latest
 curl http://localhost:11434/api/version
 ```
 
-### 2. Setup Backend
+### 2. Configure Environment Variables
+
+```bash
+cd enhanced-app/backend
+
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env to customize your settings (optional)
+# nano .env
+```
+
+**Key Configuration Options in `.env`:**
+```env
+# Ollama URL - change based on your setup
+OLLAMA_URL=http://host.docker.internal:11434  # For Docker
+# OLLAMA_URL=http://localhost:11434  # For local Ollama
+
+# Choose your preferred model
+OLLAMA_MODEL=qwen2.5:latest
+# OLLAMA_MODEL=gemma2:latest
+
+# Database location
+DATABASE_URL=sqlite+aiosqlite:///./enhanced_app.db
+```
+
+### 3. Setup Backend
 
 ```bash
 cd enhanced-app/backend
@@ -67,7 +93,7 @@ python main.py
 
 The backend will start on **http://localhost:8451**
 
-### 3. Setup Chat Interface
+### 4. Setup Chat Interface
 
 ```bash
 cd enhanced-app/frontend/chat
@@ -81,7 +107,7 @@ npm run dev
 
 The chat interface will be available at **http://localhost:8450**
 
-### 4. Setup Merchant Portal
+### 5. Setup Merchant Portal
 
 ```bash
 cd enhanced-app/frontend/merchant-portal

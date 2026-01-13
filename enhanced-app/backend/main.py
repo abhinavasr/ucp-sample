@@ -11,12 +11,17 @@ from typing import List, Optional, Dict, Any
 from contextlib import asynccontextmanager
 import uvicorn
 import json
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
 from database import db_manager, Product
 from ollama_agent import EnhancedBusinessAgent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Load environment variables
+load_dotenv()
 
 
 # ============================================================================
@@ -93,9 +98,14 @@ async def lifespan(app: FastAPI):
     """Initialize and cleanup application resources."""
     # Startup
     db_manager.init_db()
+
+    # Get configuration from environment variables
+    ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:latest")
+
     app.state.agent = EnhancedBusinessAgent(
-        ollama_url="http://host.docker.internal:11434",
-        model_name="qwen2.5:latest"  # Can also use "gemma2:latest"
+        ollama_url=ollama_url,
+        model_name=ollama_model
     )
 
     # Seed database with sample products if empty
