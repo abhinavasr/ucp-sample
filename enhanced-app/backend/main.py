@@ -16,7 +16,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from database import db_manager, Product
-from ollama_agent_simple import EnhancedBusinessAgent
+from ollama_agent import EnhancedBusinessAgent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

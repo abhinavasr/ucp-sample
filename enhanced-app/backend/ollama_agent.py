@@ -1,7 +1,6 @@
-"""Ollama-powered chat agent extending business_agent functionality."""
+"""Simplified Ollama-powered chat agent for shopping assistance."""
 
 from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import List, Dict, Any, Optional
 import json
@@ -10,7 +9,7 @@ from database import Product, db_manager
 
 
 class EnhancedBusinessAgent:
-    """Enhanced business agent using Ollama LLM."""
+    """Enhanced business agent using Ollama LLM - simplified version."""
 
     def __init__(
         self,
@@ -24,319 +23,46 @@ class EnhancedBusinessAgent:
         )
         self.checkouts = {}  # In-memory checkout sessions
         self.orders = {}  # In-memory order history
-        self.tools = self._create_tools()
-        self.agent = None
-        self._initialize_agent()
-
-    def _create_tools(self) -> List:
-        """Create tools for the agent."""
-
-        @tool
-        async def search_shopping_catalog(query: str) -> str:
-            """
-            Search the product catalog for items matching the query.
-            Returns a JSON list of matching products with details.
-
-            Args:
-                query: Search terms (e.g., "cookies", "chips", "snacks")
-            """
-            async for session in db_manager.get_session():
-                # Search by name, category, or description
-                stmt = select(Product).where(
-                    Product.is_active == True
-                ).where(
-                    (Product.name.ilike(f"%{query}%")) |
-                    (Product.category.ilike(f"%{query}%")) |
-                    (Product.description.ilike(f"%{query}%"))
-                )
-                result = await session.execute(stmt)
-                products = result.scalars().all()
-
-                if not products:
-                    return json.dumps({"message": "No products found matching your query.", "products": []})
-
-                product_list = [p.to_schema_org() for p in products]
-                return json.dumps({
-                    "message": f"Found {len(products)} product(s)",
-                    "products": product_list
-                })
-
-        @tool
-        def add_to_checkout(
-            checkout_id: str,
-            product_id: str,
-            quantity: int = 1,
-            session_id: str = "default"
-        ) -> str:
-            """
-            Add a product to the checkout cart.
-
-            Args:
-                checkout_id: Unique checkout session ID
-                product_id: Product ID to add
-                quantity: Quantity to add (default: 1)
-                session_id: User session identifier
-            """
-            if checkout_id not in self.checkouts:
-                self.checkouts[checkout_id] = {
-                    "id": checkout_id,
-                    "session_id": session_id,
-                    "line_items": [],
-                    "currency": "USD",
-                    "status": "incomplete",
-                    "customer": {},
-                    "totals": {}
-                }
-
-            checkout = self.checkouts[checkout_id]
-
-            # Check if product already in cart
-            for item in checkout["line_items"]:
-                if item["product_id"] == product_id:
-                    item["quantity"] += quantity
-                    self._recalculate_checkout(checkout_id)
-                    return json.dumps({
-                        "message": f"Updated quantity for product {product_id}",
-                        "checkout": checkout
-                    })
-
-            # Add new line item
-            checkout["line_items"].append({
-                "product_id": product_id,
-                "quantity": quantity
-            })
-
-            self._recalculate_checkout(checkout_id)
-            return json.dumps({
-                "message": f"Added product {product_id} to checkout",
-                "checkout": checkout
-            })
-
-        @tool
-        def remove_from_checkout(checkout_id: str, product_id: str) -> str:
-            """
-            Remove a product from the checkout cart.
-
-            Args:
-                checkout_id: Unique checkout session ID
-                product_id: Product ID to remove
-            """
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            checkout = self.checkouts[checkout_id]
-            checkout["line_items"] = [
-                item for item in checkout["line_items"]
-                if item["product_id"] != product_id
-            ]
-
-            self._recalculate_checkout(checkout_id)
-            return json.dumps({
-                "message": f"Removed product {product_id} from checkout",
-                "checkout": checkout
-            })
-
-        @tool
-        def update_checkout(checkout_id: str, product_id: str, quantity: int) -> str:
-            """
-            Update the quantity of a product in checkout.
-
-            Args:
-                checkout_id: Unique checkout session ID
-                product_id: Product ID to update
-                quantity: New quantity (0 to remove)
-            """
-            if quantity == 0:
-                return remove_from_checkout(checkout_id, product_id)
-
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            checkout = self.checkouts[checkout_id]
-            for item in checkout["line_items"]:
-                if item["product_id"] == product_id:
-                    item["quantity"] = quantity
-                    self._recalculate_checkout(checkout_id)
-                    return json.dumps({
-                        "message": f"Updated quantity to {quantity}",
-                        "checkout": checkout
-                    })
-
-            return json.dumps({"error": "Product not found in checkout"})
-
-        @tool
-        def get_checkout(checkout_id: str) -> str:
-            """
-            Get current checkout details.
-
-            Args:
-                checkout_id: Unique checkout session ID
-            """
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            return json.dumps({"checkout": self.checkouts[checkout_id]})
-
-        @tool
-        def update_customer_details(
-            checkout_id: str,
-            email: str,
-            shipping_address: Optional[Dict[str, str]] = None
-        ) -> str:
-            """
-            Update customer email and shipping information.
-
-            Args:
-                checkout_id: Unique checkout session ID
-                email: Customer email address
-                shipping_address: Shipping address dict with street, city, state, zip, country
-            """
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            checkout = self.checkouts[checkout_id]
-            checkout["customer"]["email"] = email
-
-            if shipping_address:
-                checkout["customer"]["shipping_address"] = shipping_address
-
-            return json.dumps({
-                "message": "Customer details updated",
-                "checkout": checkout
-            })
-
-        @tool
-        def start_payment(checkout_id: str) -> str:
-            """
-            Initialize payment process for checkout.
-
-            Args:
-                checkout_id: Unique checkout session ID
-            """
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            checkout = self.checkouts[checkout_id]
-
-            if not checkout["line_items"]:
-                return json.dumps({"error": "Checkout is empty"})
-
-            if "email" not in checkout.get("customer", {}):
-                return json.dumps({"error": "Customer email required"})
-
-            checkout["status"] = "ready_for_payment"
-            return json.dumps({
-                "message": "Ready for payment",
-                "checkout": checkout,
-                "payment_required": True
-            })
-
-        @tool
-        def complete_checkout(checkout_id: str, payment_token: str = "mock_token") -> str:
-            """
-            Complete the checkout and create an order.
-
-            Args:
-                checkout_id: Unique checkout session ID
-                payment_token: Payment authorization token
-            """
-            if checkout_id not in self.checkouts:
-                return json.dumps({"error": "Checkout not found"})
-
-            checkout = self.checkouts[checkout_id]
-
-            if checkout["status"] != "ready_for_payment":
-                return json.dumps({"error": "Checkout not ready for completion"})
-
-            # Create order
-            import time
-            order_id = f"ORD-{int(time.time())}"
-            order = {
-                "id": order_id,
-                "checkout_id": checkout_id,
-                "items": checkout["line_items"],
-                "customer": checkout["customer"],
-                "totals": checkout["totals"],
-                "payment_token": payment_token,
-                "status": "completed",
-                "created_at": time.time()
-            }
-
-            self.orders[order_id] = order
-            checkout["status"] = "completed"
-
-            return json.dumps({
-                "message": "Order placed successfully!",
-                "order": order
-            })
-
-        return [
-            search_shopping_catalog,
-            add_to_checkout,
-            remove_from_checkout,
-            update_checkout,
-            get_checkout,
-            update_customer_details,
-            start_payment,
-            complete_checkout
-        ]
-
-    def _recalculate_checkout(self, checkout_id: str):
-        """Recalculate checkout totals including tax and shipping."""
-        checkout = self.checkouts[checkout_id]
-
-        # This would normally fetch product details from DB
-        # For now, we'll use placeholder logic
-        subtotal = 0.0
-        for item in checkout["line_items"]:
-            # In real implementation, fetch price from DB
-            item_price = 5.00  # Placeholder
-            item["line_total"] = item_price * item["quantity"]
-            subtotal += item["line_total"]
-
-        tax = subtotal * 0.10  # 10% tax
-        shipping = 5.00 if subtotal > 0 else 0.00
-        total = subtotal + tax + shipping
-
-        checkout["totals"] = {
-            "subtotal": round(subtotal, 2),
-            "tax": round(tax, 2),
-            "shipping": round(shipping, 2),
-            "total": round(total, 2),
-            "currency": "USD"
-        }
-
-    def _initialize_agent(self):
-        """Initialize the LangChain agent."""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful shopping assistant for an online store.
+        self.system_prompt = """You are a helpful shopping assistant for an online store.
 
 You can help customers:
 - Search for products in our catalog
-- Add items to their shopping cart
-- Manage their checkout (add, remove, update quantities)
-- Collect shipping information
-- Process payments and complete orders
+- Answer questions about products
+- Help them find what they need
 
-Be friendly, helpful, and guide customers through the shopping process.
-Always confirm actions and provide clear feedback.
+Be friendly, helpful, and guide customers through the shopping experience.
+Always provide clear, concise responses.
 
-When showing products, describe them clearly and mention the price.
-When customers want to buy something, add it to their checkout and show the current cart status.
-"""),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
+When customers ask about products, I will provide you with the product information from our database.
+"""
 
-        agent = create_react_agent(self.llm, self.tools, prompt)
-        self.agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5
-        )
+    async def search_products(self, query: str = None, limit: int = 10) -> List[Dict]:
+        """Search for products in the database."""
+        async for session in db_manager.get_session():
+            stmt = select(Product).where(Product.is_active == True)
+
+            if query:
+                search_term = f"%{query.lower()}%"
+                stmt = stmt.where(
+                    (Product.name.ilike(search_term)) |
+                    (Product.description.ilike(search_term)) |
+                    (Product.category.ilike(search_term))
+                )
+
+            stmt = stmt.limit(limit)
+            result = await session.execute(stmt)
+            products = result.scalars().all()
+
+            return [{
+                "id": p.id,
+                "sku": p.sku,
+                "name": p.name,
+                "description": p.description,
+                "price": p.price,
+                "currency": p.currency,
+                "category": p.category,
+                "brand": p.brand
+            } for p in products]
 
     async def process_message(
         self,
@@ -356,20 +82,43 @@ When customers want to buy something, add it to their checkout and show the curr
             Response dict with output and metadata
         """
         try:
-            result = await self.agent_executor.ainvoke({
-                "input": message,
-                "chat_history": chat_history or []
-            })
+            # Check if user is asking about products
+            search_keywords = ['product', 'cookie', 'chip', 'strawberr', 'show', 'what', 'find', 'looking for']
+            should_search = any(keyword in message.lower() for keyword in search_keywords)
+
+            product_context = ""
+            if should_search:
+                # Extract potential search query
+                products = await self.search_products()
+                if products:
+                    product_context = "\n\nAvailable products:\n"
+                    for p in products:
+                        product_context += f"- {p['name']} (${p['price']}) - {p['description']}\n"
+
+            # Build conversation messages
+            messages = [SystemMessage(content=self.system_prompt)]
+
+            if chat_history:
+                messages.extend(chat_history)
+
+            user_message = message
+            if product_context:
+                user_message += product_context
+
+            messages.append(HumanMessage(content=user_message))
+
+            # Get response from LLM
+            response = await self.llm.ainvoke(messages)
 
             return {
-                "output": result["output"],
+                "output": response.content,
                 "session_id": session_id,
                 "status": "success"
             }
+
         except Exception as e:
             return {
-                "output": f"I apologize, but I encountered an error: {str(e)}",
+                "output": f"I apologize, but I encountered an error: {str(e)}. Please try again.",
                 "session_id": session_id,
-                "status": "error",
-                "error": str(e)
+                "status": "error"
             }
