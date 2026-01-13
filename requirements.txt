@@ -1,9 +1,0 @@
-Modify the application in ucp-sample: 
-1. Use ollama as chat model (use qwen or gemma model from url: http://host.docker.internal:11434).
-2. Have a beautiful website for chat interface
-3. Have a merchant portal to configure the products and pricing that can be exposed to the chat agent
-4. Update the application on the github when the changes are complete
-5. Develop backend only in Python
-6. Front end can be as fancy JS as you like as long as it has amazing experience
-7. use ports 8450 - mapped to https://chat.abhinava.xyz to 8451 - mapped to https://app.abhinava.xyz
-8. make sure that the app build is enahancement/extension of business_agent and chat-client. Do not write redundant code.
