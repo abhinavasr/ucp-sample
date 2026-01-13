@@ -26,6 +26,17 @@ fi
 
 echo ""
 
+# Load environment variables
+if [ -f ".env" ]; then
+    echo -e "${BLUE}Loading environment variables...${NC}"
+    export $(cat .env | grep -v '^#' | xargs)
+    echo -e "${GREEN}✓ Environment variables loaded${NC}"
+else
+    echo -e "${YELLOW}⚠ Warning: .env file not found${NC}"
+fi
+
+echo ""
+
 # Start Backend
 echo -e "${BLUE}Starting Backend Server...${NC}"
 cd backend
