@@ -1,8 +1,8 @@
 """Ollama-powered chat agent extending business_agent functionality."""
 
 from langchain_ollama import ChatOllama
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.tools import tool
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from typing import List, Dict, Any, Optional
 import json
@@ -330,7 +330,7 @@ When customers want to buy something, add it to their checkout and show the curr
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        agent = create_tool_calling_agent(self.llm, self.tools, prompt)
+        agent = create_react_agent(self.llm, self.tools, prompt)
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,

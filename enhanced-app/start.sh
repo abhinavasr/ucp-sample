@@ -56,7 +56,14 @@ cd backend
 # Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
-    python3 -m venv venv || python -m venv venv
+    if command -v python3 &> /dev/null; then
+        python3 -m venv venv
+    elif command -v python &> /dev/null; then
+        python -m venv venv
+    else
+        echo -e "${YELLOW}⚠ Error: Python not found${NC}"
+        exit 1
+    fi
 fi
 
 # Activate virtual environment
@@ -82,6 +89,22 @@ cd ..
 # Wait for backend to start
 echo "Waiting for backend to be ready..."
 sleep 3
+
+# Check if npm is installed
+if ! command -v npm &> /dev/null; then
+    echo -e "${YELLOW}⚠ Error: npm is not installed${NC}"
+    echo -e "${YELLOW}  The backend is running on port 8451${NC}"
+    echo -e "${YELLOW}  To start the frontends, please install Node.js and npm first:${NC}"
+    echo -e "${YELLOW}    - Visit: https://nodejs.org/${NC}"
+    echo -e "${YELLOW}    - Or use: apt-get install nodejs npm (Debian/Ubuntu)${NC}"
+    echo ""
+    echo -e "${GREEN}Backend is running at:${NC}"
+    echo -e "📚 ${BLUE}API Documentation:${NC}   http://localhost:8451/docs"
+    echo ""
+    echo -e "${YELLOW}Press Ctrl+C to stop the backend${NC}"
+    wait
+    exit 0
+fi
 
 # Start Chat Frontend
 echo ""
