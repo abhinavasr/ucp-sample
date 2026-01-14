@@ -89,6 +89,33 @@ class ProductResponse(BaseModel):
     updated_at: datetime
 
 
+class CartItem(BaseModel):
+    """Cart item model."""
+    product_id: str
+    sku: str
+    name: str
+    price: float
+    quantity: int
+
+
+class CheckoutRequest(BaseModel):
+    """Checkout request model."""
+    items: List[CartItem]
+    customer_name: Optional[str] = None
+    customer_email: Optional[EmailStr] = None
+    customer_phone: Optional[str] = None
+
+
+class CheckoutResponse(BaseModel):
+    """Checkout response model."""
+    checkout_id: str
+    items: List[CartItem]
+    total: float
+    currency: str
+    status: str
+    created_at: str
+
+
 # ============================================================================
 # Application Lifecycle
 # ============================================================================
@@ -248,6 +275,50 @@ async def chat(
         response=result["output"],
         session_id=result["session_id"],
         status=result["status"]
+    )
+
+
+@app.post("/api/checkout", response_model=CheckoutResponse, status_code=201)
+async def create_checkout(
+    checkout_request: CheckoutRequest,
+    agent: EnhancedBusinessAgent = Depends(get_agent)
+):
+    """Create a new checkout session and process purchase."""
+    import uuid
+    from datetime import datetime
+
+    # Generate unique checkout ID
+    checkout_id = str(uuid.uuid4())
+
+    # Calculate total
+    total = sum(item.price * item.quantity for item in checkout_request.items)
+
+    # Create checkout session
+    checkout_data = {
+        "checkout_id": checkout_id,
+        "items": [item.dict() for item in checkout_request.items],
+        "total": total,
+        "currency": "USD",
+        "status": "completed",
+        "customer_name": checkout_request.customer_name,
+        "customer_email": checkout_request.customer_email,
+        "customer_phone": checkout_request.customer_phone,
+        "created_at": datetime.now().isoformat()
+    }
+
+    # Store checkout in memory
+    agent.checkouts[checkout_id] = checkout_data
+
+    # Also store as an order for history
+    agent.orders[checkout_id] = checkout_data
+
+    return CheckoutResponse(
+        checkout_id=checkout_id,
+        items=checkout_request.items,
+        total=total,
+        currency="USD",
+        status="completed",
+        created_at=checkout_data["created_at"]
     )
 
 
