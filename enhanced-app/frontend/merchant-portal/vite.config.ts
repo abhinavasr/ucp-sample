@@ -6,10 +6,10 @@ export default defineConfig({
   server: {
     port: 8451,
     host: '0.0.0.0',
-    allowedHosts: ['app.abhinava.xyz'], 
+    allowedHosts: ['app.abhinava.xyz'],
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8452',
+        target: 'http://127.0.0.1:8453',  // Merchant backend
         changeOrigin: true,
       }
     }

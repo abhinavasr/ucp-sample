@@ -1,0 +1,165 @@
+"""Ollama-powered chat agent with UCP integration for shopping assistance."""
+
+from langchain_ollama import ChatOllama
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from typing import List, Dict, Any, Optional
+import logging
+
+from ucp_client import UCPMerchantClient
+
+logger = logging.getLogger(__name__)
+
+
+class EnhancedBusinessAgent:
+    """Enhanced business agent using Ollama LLM with UCP merchant integration."""
+
+    def __init__(
+        self,
+        ollama_url: str = "http://host.docker.internal:11434",
+        model_name: str = "qwen2.5:latest",
+        merchant_url: str = "http://localhost:8451"
+    ):
+        self.llm = ChatOllama(
+            base_url=ollama_url,
+            model=model_name,
+            temperature=0.7,
+        )
+        self.ucp_client = UCPMerchantClient(merchant_url)
+        self.carts = {}  # In-memory cart storage: {session_id: [{product_id, name, price, quantity, sku}]}
+        self.checkouts = {}  # In-memory checkout sessions
+        self.orders = {}  # In-memory order history
+        self.system_prompt = """You are a helpful shopping assistant for an online store.
+
+You can help customers:
+- Search for products in our catalog
+- Answer questions about products
+- View their shopping cart
+- Help them find what they need
+
+IMPORTANT:
+- When showing the cart, I will provide you with the ACTUAL cart contents
+- DO NOT make up or assume what's in the cart - only use the cart data I provide
+- If cart data is provided, show it accurately
+- If no cart data is provided, say the cart is empty
+
+Be friendly, helpful, and guide customers through the shopping experience.
+Always provide clear, concise responses.
+
+When customers ask about products, I will provide you with the product information from our catalog.
+"""
+
+    async def initialize(self):
+        """Initialize the agent by discovering UCP capabilities."""
+        try:
+            await self.ucp_client.discover_capabilities()
+            logger.info("UCP client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize UCP client: {e}")
+
+    async def search_products(self, query: str = None, limit: int = 10) -> List[Dict]:
+        """
+        Search for products via UCP client.
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+
+        Returns:
+            List of products
+        """
+        try:
+            products = await self.ucp_client.search_products(query=query, limit=limit)
+            return products
+        except Exception as e:
+            logger.error(f"Failed to search products: {e}")
+            return []
+
+    async def process_message(
+        self,
+        message: str,
+        session_id: str = "default",
+        chat_history: Optional[List] = None
+    ) -> Dict[str, Any]:
+        """
+        Process a user message and return agent response.
+
+        Args:
+            message: User input message
+            session_id: Session identifier
+            chat_history: Previous conversation history
+
+        Returns:
+            Response dict with output and metadata
+        """
+        try:
+            # Check if user is asking about cart
+            cart_keywords = ['cart', 'basket', 'my order', 'what did i add', 'show me what']
+            is_cart_query = any(keyword in message.lower() for keyword in cart_keywords)
+
+            # Check if user is asking about products
+            search_keywords = ['product', 'cookie', 'chip', 'strawberr', 'show', 'what', 'find', 'looking for', 'search']
+            should_search = any(keyword in message.lower() for keyword in search_keywords) and not is_cart_query
+
+            context = ""
+
+            # Add cart context if asking about cart
+            if is_cart_query:
+                cart_items = self.carts.get(session_id, [])
+                if cart_items:
+                    context += "\n\nCURRENT CART CONTENTS (show this to the user):\n"
+                    total = 0
+                    for item in cart_items:
+                        item_total = item['price'] * item['quantity']
+                        total += item_total
+                        context += f"- {item['name']} x{item['quantity']} @ ${item['price']:.2f} each = ${item_total:.2f}\n"
+                    context += f"\nCart Total: ${total:.2f}\n"
+                else:
+                    context += "\n\nThe user's cart is currently EMPTY.\n"
+
+            # Add product search context
+            if should_search:
+                # Extract potential search query from the message
+                search_query = None
+                for keyword in ['cookie', 'chip', 'strawberr', 'bar', 'snack', 'fruit']:
+                    if keyword in message.lower():
+                        search_query = keyword
+                        break
+
+                products = await self.search_products(query=search_query)
+                if products:
+                    context += "\n\nAvailable products:\n"
+                    for p in products:
+                        context += f"- {p['name']} (${p['price']:.2f}) - {p.get('description', 'No description')}\n"
+
+            # Build conversation messages
+            messages = [SystemMessage(content=self.system_prompt)]
+
+            if chat_history:
+                messages.extend(chat_history)
+
+            user_message = message
+            if context:
+                user_message += context
+
+            messages.append(HumanMessage(content=user_message))
+
+            # Get response from LLM
+            response = await self.llm.ainvoke(messages)
+
+            return {
+                "output": response.content,
+                "session_id": session_id,
+                "status": "success"
+            }
+
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+            return {
+                "output": f"I apologize, but I encountered an error: {str(e)}. Please try again.",
+                "session_id": session_id,
+                "status": "error"
+            }
+
+    async def cleanup(self):
+        """Cleanup resources."""
+        await self.ucp_client.close()

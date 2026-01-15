@@ -1,347 +1,390 @@
-# Enhanced Business Agent with Merchant Portal
+# Enhanced Business Agent - Split Architecture with UCP
 
-A comprehensive AI-powered shopping assistant with Ollama integration and merchant portal for product management.
+This is a production-ready implementation demonstrating **two separate systems** communicating over the **Universal Commerce Protocol (UCP)**.
 
-## Features
+## 🏗️ Architecture Overview
 
-- **AI Chat Interface** (Port 8450 → https://chat.abhinava.xyz)
-  - Beautiful, modern chat UI built with React and Tailwind CSS
-  - Ollama-powered conversational AI (using Qwen or Gemma models)
-  - Product search and recommendations
+The application is split into two independent backends that communicate via UCP:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend Layer                          │
+├──────────────────────────────┬──────────────────────────────────┤
+│  Chat Frontend (Port 3000)   │  Merchant Portal (Port 3001)     │
+│  - React + TypeScript        │  - React + TypeScript            │
+│  - Tailwind CSS              │  - Tailwind CSS                  │
+│  - Vite Dev Server           │  - Vite Dev Server               │
+└──────────────┬───────────────┴──────────────┬───────────────────┘
+               │                              │
+               │ HTTP                         │ HTTP
+               │                              │
+┌──────────────▼───────────────┐  ┌──────────▼───────────────────┐
+│   Chat Backend (Port 8450)   │  │ Merchant Backend (Port 8451) │
+│   ========================   │  │ ===========================  │
+│   • UCP Client               │  │ • UCP Server                 │
+│   • FastAPI                  │  │ • FastAPI                    │
+│   • Ollama LLM Integration   │  │ • SQLite Database            │
+│   • Shopping Assistant       │  │ • Product Catalog            │
+│   • Session Management       │  │ • CRUD API                   │
+└──────────────┬───────────────┘  └──────────▲───────────────────┘
+               │                              │
+               │    UCP REST Protocol         │
+               └──────────────────────────────┘
+                    /.well-known/ucp
+                    /ucp/products/search
+```
+
+### Key Components
+
+#### 1. **Chat Backend** (Port 8450) - UCP Client
+- **Role**: Consumer/Client
+- **Technology**: FastAPI + Ollama LLM + LangChain
+- **Responsibilities**:
+  - AI-powered chat interface
+  - Natural language processing
   - Shopping cart management
-  - Order completion
+  - Checkout session handling
+  - **UCP Client**: Discovers and queries merchant backend
 
-- **Merchant Portal** (Port 8451 → https://app.abhinava.xyz)
-  - Product management (Create, Read, Update, Delete)
-  - Pricing configuration
-  - Category and brand management
-  - Real-time product statistics
-  - Beautiful admin dashboard
+#### 2. **Merchant Backend** (Port 8451) - UCP Server
+- **Role**: Provider/Server
+- **Technology**: FastAPI + SQLAlchemy + SQLite
+- **Responsibilities**:
+  - Product catalog management
+  - Database persistence
+  - UCP-compliant REST API
+  - **UCP Server**: Exposes discovery endpoint and product search
 
-- **Python Backend** (Port 8451)
-  - FastAPI-based REST API
-  - Ollama LLM integration
-  - SQLite persistent database
-  - Extends existing business_agent functionality
-  - Full CRUD API for products
+#### 3. **Frontend Applications**
+- **Chat Frontend** (Port 3000): Customer-facing shopping interface
+- **Merchant Portal** (Port 3001): Admin interface for product management
 
-## Prerequisites
+## 🔌 UCP Integration
 
-- Python 3.11+
-- Node.js 18+
-- Ollama running on http://host.docker.internal:11434 (or localhost:11434)
-  - With `qwen2.5:latest` or `gemma2:latest` model installed
+### UCP Discovery Endpoint
 
-## Quick Start
-
-### 1. Install Ollama and Models
+The Merchant Backend exposes a standard UCP discovery endpoint:
 
 ```bash
-# Install Ollama (if not already installed)
-# Visit: https://ollama.ai/download
-
-# Pull the required model (choose one)
-ollama pull qwen2.5:latest
-# OR
-ollama pull gemma2:latest
-
-# Verify Ollama is running
-curl http://localhost:11434/api/version
+GET http://localhost:8451/.well-known/ucp
 ```
 
-### 2. Configure Environment Variables
+**Response:**
+```json
+{
+  "ucp": {
+    "version": "2026-01-11",
+    "services": {
+      "dev.ucp.shopping": {
+        "version": "2026-01-11",
+        "spec": "https://ucp.dev/specs/shopping",
+        "rest": {
+          "schema": "https://ucp.dev/services/shopping/openapi.json",
+          "endpoint": "http://localhost:8451"
+        }
+      }
+    },
+    "capabilities": [
+      {
+        "name": "dev.ucp.shopping.product_search",
+        "version": "2026-01-11",
+        "spec": "https://ucp.dev/specs/shopping/product_search",
+        "schema": "https://ucp.dev/schemas/shopping/product_search.json"
+      }
+    ]
+  },
+  "merchant": {
+    "id": "merchant-001",
+    "name": "Enhanced Business Store",
+    "url": "http://localhost:8451"
+  }
+}
+```
+
+### UCP Product Search
+
+The Chat Backend uses the UCP client to search products:
+
+```python
+# In chat-backend/ucp_client.py
+async def search_products(self, query: str = None, limit: int = 10):
+    """Search products using UCP product search endpoint."""
+    response = await self.client.get(
+        f"{self.merchant_url}/ucp/products/search",
+        params={"q": query, "limit": limit}
+    )
+    # Prices are in cents (UCP standard)
+    data = response.json()
+    return data["items"]
+```
+
+The Merchant Backend serves UCP-compliant product data:
 
 ```bash
-cd enhanced-app/backend
-
-# Copy the example environment file
-cp .env.example .env
-
-# Edit .env to customize your settings (optional)
-# nano .env
+GET http://localhost:8451/ucp/products/search?q=cookies&limit=5
 ```
 
-**Key Configuration Options in `.env`:**
-```env
-# Ollama URL - change based on your setup
-OLLAMA_URL=http://host.docker.internal:11434  # For Docker
-# OLLAMA_URL=http://localhost:11434  # For local Ollama
-
-# Choose your preferred model
-OLLAMA_MODEL=qwen2.5:latest
-# OLLAMA_MODEL=gemma2:latest
-
-# Database location
-DATABASE_URL=sqlite+aiosqlite:///./enhanced_app.db
+**Response:**
+```json
+{
+  "items": [
+    {
+      "id": "PROD-001",
+      "title": "Chocochip Cookies",
+      "price": 499,  // Price in cents
+      "image_url": "...",
+      "description": "Delicious chocolate chip cookies"
+    }
+  ],
+  "total": 1
+}
 ```
 
-### 3. Setup Backend
+## 🚀 Quick Start
 
-```bash
-cd enhanced-app/backend
+### Prerequisites
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+1. **Python 3.10+**
+2. **Node.js 18+**
+3. **Ollama** running with a model (e.g., qwen3:8b, qwen2.5:latest, gemma2:latest)
 
-# Install dependencies
-pip install -r requirements.txt
+### Installation & Running
 
-# Run backend server
-python main.py
-```
+1. **Clone the repository**
+   ```bash
+   cd ucp-sample/enhanced-app
+   ```
 
-The backend will start on **http://localhost:8451**
+2. **Configure environment**
+   ```bash
+   # Edit chat-backend/.env
+   OLLAMA_URL=http://192.168.86.41:11434
+   OLLAMA_MODEL=qwen3:8b
+   MERCHANT_BACKEND_URL=http://localhost:8451
 
-### 4. Setup Chat Interface
+   # Edit merchant-backend/.env
+   DATABASE_URL=sqlite+aiosqlite:///./merchant.db
+   PORT=8451
+   ```
 
-```bash
-cd enhanced-app/frontend/chat
+3. **Start all services**
+   ```bash
+   ./start-split.sh
+   ```
 
-# Install dependencies
-npm install
+   This will start:
+   - Merchant Backend (8453) - UCP Server
+   - Chat Backend (8452) - UCP Client
+   - Chat Frontend (8450) - maps to chat.abhinava.xyz
+   - Merchant Portal (8451) - maps to app.abhinava.xyz
 
-# Start development server
-npm run dev
-```
+4. **Access the applications**
+   - **Chat Interface**: http://localhost:8450 (https://chat.abhinava.xyz)
+   - **Merchant Portal**: http://localhost:8451 (https://app.abhinava.xyz)
+   - **Chat Backend API**: http://localhost:8452/docs
+   - **Merchant Backend API**: http://localhost:8453/docs
 
-The chat interface will be available at **http://localhost:8450**
+5. **Stop all services**
+   ```bash
+   ./stop-split.sh
+   ```
 
-### 5. Setup Merchant Portal
-
-```bash
-cd enhanced-app/frontend/merchant-portal
-
-# Install dependencies
-npm install
-
-# Start development server (on different port temporarily for dev)
-npm run dev
-```
-
-The merchant portal will be available at **http://localhost:8451** (note: in dev, you might need to adjust vite config)
-
-## Production Build
-
-### Backend
-
-```bash
-cd enhanced-app/backend
-pip install -r requirements.txt
-python main.py
-```
-
-### Frontend (Chat)
-
-```bash
-cd enhanced-app/frontend/chat
-npm install
-npm run build
-npm run preview
-```
-
-### Frontend (Merchant Portal)
-
-```bash
-cd enhanced-app/frontend/merchant-portal
-npm install
-npm run build
-npm run preview
-```
-
-## API Documentation
-
-Once the backend is running, visit:
-- **API Docs**: http://localhost:8451/docs
-- **Health Check**: http://localhost:8451/health
-
-### Key Endpoints
-
-#### Chat API
-- `POST /api/chat` - Send message to AI assistant
-- `GET /api/checkout/{checkout_id}` - Get checkout details
-- `GET /api/orders/{order_id}` - Get order details
-
-#### Merchant Portal API
-- `GET /api/merchant/products` - List all products
-- `POST /api/merchant/products` - Create new product
-- `PUT /api/merchant/products/{id}` - Update product
-- `DELETE /api/merchant/products/{id}` - Delete product
-
-## Configuration
-
-### Backend
-
-Edit `enhanced-app/backend/main.py` to configure:
-- Ollama URL (default: `http://host.docker.internal:11434`)
-- Model name (default: `qwen2.5:latest`)
-- Port (default: 8451)
-
-### Frontend
-
-Edit `enhanced-app/frontend/chat/vite.config.ts` and `enhanced-app/frontend/merchant-portal/vite.config.ts` to configure:
-- Port numbers
-- API proxy settings
-
-## Database
-
-The application uses SQLite for data persistence:
-- Location: `enhanced-app/backend/enhanced_app.db`
-- Auto-initialized with sample products on first run
-
-## Environment Variables
-
-Create a `.env` file in `enhanced-app/backend/`:
-
-```env
-DATABASE_URL=sqlite+aiosqlite:///./enhanced_app.db
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:latest
-```
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 enhanced-app/
-├── backend/
-│   ├── main.py              # FastAPI application
-│   ├── database.py          # SQLAlchemy models
-│   ├── ollama_agent.py      # Ollama LLM integration
-│   ├── requirements.txt     # Python dependencies
-│   └── Dockerfile          # (Optional) Docker configuration
+├── chat-backend/              # UCP Client Backend
+│   ├── main.py               # FastAPI application
+│   ├── ollama_agent.py       # LLM-powered agent
+│   ├── ucp_client.py         # UCP REST client
+│   ├── .env                  # Configuration
+│   └── pyproject.toml        # Python dependencies
+│
+├── merchant-backend/          # UCP Server Backend
+│   ├── main.py               # FastAPI application with UCP
+│   ├── database.py           # SQLAlchemy models
+│   ├── .env                  # Configuration
+│   └── pyproject.toml        # Python dependencies
 │
 ├── frontend/
-│   ├── chat/               # Chat interface
+│   ├── chat/                 # Chat Frontend (Port 3000)
 │   │   ├── src/
-│   │   │   ├── App.tsx    # Main chat UI
-│   │   │   ├── main.tsx
-│   │   │   └── index.css
-│   │   ├── package.json
-│   │   └── vite.config.ts
+│   │   │   └── App.tsx      # React application
+│   │   └── vite.config.ts   # Proxy to chat-backend
 │   │
-│   └── merchant-portal/    # Admin portal
+│   └── merchant-portal/      # Admin Frontend (Port 3001)
 │       ├── src/
-│       │   ├── App.tsx    # Product management UI
-│       │   ├── main.tsx
-│       │   └── index.css
-│       ├── package.json
-│       └── vite.config.ts
+│       │   └── App.tsx      # React application
+│       └── vite.config.ts   # Proxy to merchant-backend
 │
-├── docker-compose.yml      # (Optional) Docker Compose
-└── README.md              # This file
+├── start-split.sh            # Start all services
+├── stop-split.sh             # Stop all services
+├── README-SPLIT-ARCHITECTURE.md
+└── logs/                     # Application logs
 ```
 
-## Deployment
+## 🔍 Testing UCP Communication
 
-### Reverse Proxy Configuration (Nginx)
-
-For production deployment with domain mapping:
-
-```nginx
-# Chat Interface - chat.abhinava.xyz
-server {
-    listen 443 ssl http2;
-    server_name chat.abhinava.xyz;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8450;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-
-# Merchant Portal & API - app.abhinava.xyz
-server {
-    listen 443 ssl http2;
-    server_name app.abhinava.xyz;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8451;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-## Usage Examples
-
-### Chat Interface
-
-1. Open http://localhost:8450
-2. Type: "Show me some cookies"
-3. The AI will search and display products
-4. Use quick action buttons for common tasks
-5. Add items to cart through conversation
-6. Complete checkout with shipping info
-
-### Merchant Portal
-
-1. Open http://localhost:8451
-2. View product statistics on dashboard
-3. Click "Add New Product" to create products
-4. Edit existing products with the edit icon
-5. Delete products (soft delete by default)
-6. All changes immediately available to chat agent
-
-## Troubleshooting
-
-### Ollama Connection Issues
-
-If you see "Connection refused" errors:
+### 1. Test UCP Discovery
 
 ```bash
-# Check if Ollama is running
-curl http://localhost:11434/api/version
-
-# If using Docker, use host.docker.internal instead of localhost
-# Update OLLAMA_URL in backend configuration
+# Discover merchant capabilities
+curl http://localhost:8453/.well-known/ucp | jq
 ```
 
-### Database Issues
+### 2. Test UCP Product Search
 
 ```bash
-# Reset database (delete and it will auto-recreate)
-rm enhanced-app/backend/enhanced_app.db
-python enhanced-app/backend/main.py
+# Search for cookies
+curl "http://localhost:8453/ucp/products/search?q=cookies&limit=5" | jq
 ```
+
+### 3. Test Chat Backend UCP Client
+
+```bash
+# The chat backend automatically uses UCP to fetch products
+curl -X POST http://localhost:8452/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Show me cookies available",
+    "session_id": "test-session"
+  }' | jq
+```
+
+The chat backend will:
+1. Detect product search intent
+2. Call merchant backend via UCP: `GET /ucp/products/search?q=cookies`
+3. Convert UCP format (cents) to dollars
+4. Send product context to LLM
+5. Return AI-generated response with product recommendations
+
+## 🎯 Key Features
+
+### UCP Communication
+- ✅ **Discovery**: Chat backend discovers merchant capabilities
+- ✅ **Standard Protocol**: Uses UCP-compliant REST endpoints
+- ✅ **Price Format**: Handles prices in cents (UCP standard)
+- ✅ **Independent Systems**: Both backends can run separately
+- ✅ **Extensible**: Easy to add more UCP capabilities
+
+### Chat Backend Features
+- 🤖 AI-powered conversation with Ollama
+- 🔍 Automatic product search via UCP
+- 🛒 Shopping cart management
+- 💳 Checkout session handling
+
+### Merchant Backend Features
+- 📦 Full CRUD product management
+- 🗄️ SQLite database persistence
+- 🔌 UCP-compliant REST API
+- 📊 Product search and filtering
+
+### Frontend Features
+- ⚛️ React + TypeScript + Tailwind CSS
+- 🎨 Modern, responsive UI
+- 🔄 Real-time updates
+- 📱 Mobile-friendly design
+
+## 🔧 Configuration
+
+### Chat Backend (.env)
+```env
+OLLAMA_URL=http://192.168.86.41:11434
+OLLAMA_MODEL=qwen3:8b
+HOST=0.0.0.0
+PORT=8452
+MERCHANT_BACKEND_URL=http://localhost:8453
+```
+
+### Merchant Backend (.env)
+```env
+DATABASE_URL=sqlite+aiosqlite:///./merchant.db
+HOST=0.0.0.0
+PORT=8453
+MERCHANT_NAME=Enhanced Business Store
+MERCHANT_ID=merchant-001
+MERCHANT_URL=http://localhost:8453
+```
+
+## 📊 Port Allocation
+
+| Service            | Port | Type         | Purpose                    |
+|--------------------|------|--------------|----------------------------|
+| Chat Frontend      | 8450 | Vite Dev     | Customer interface (chat.abhinava.xyz) |
+| Merchant Portal    | 8451 | Vite Dev     | Admin interface (app.abhinava.xyz)     |
+| Chat Backend       | 8452 | FastAPI      | UCP Client + AI Agent      |
+| Merchant Backend   | 8453 | FastAPI      | UCP Server + Product DB    |
+
+## 🔐 Production Deployment
+
+For production use:
+
+1. **Set specific CORS origins** in both backends
+2. **Use production databases** (PostgreSQL recommended)
+3. **Enable HTTPS** with reverse proxy (nginx/Caddy)
+4. **Secure API authentication** (JWT, API keys)
+5. **Configure Ollama** for production workloads
+6. **Monitor UCP endpoints** for performance
+7. **Implement rate limiting** on UCP endpoints
+
+## 📝 Logs
+
+View real-time logs:
+
+```bash
+# Merchant Backend
+tail -f logs/merchant-backend.log
+
+# Chat Backend
+tail -f logs/chat-backend.log
+
+# Chat Frontend
+tail -f logs/chat-frontend.log
+
+# Merchant Portal
+tail -f logs/merchant-portal.log
+```
+
+## 🐛 Troubleshooting
 
 ### Port Conflicts
-
-If ports 8450 or 8451 are in use:
-
 ```bash
-# Find and kill process using the port
-lsof -ti:8450 | xargs kill -9
-lsof -ti:8451 | xargs kill -9
+# Check what's using a port
+lsof -i :8450
+lsof -i :8453
+
+# Kill process on port
+kill -9 $(lsof -ti:8450)
 ```
 
-## Development Notes
+### UCP Discovery Fails
+```bash
+# Verify merchant backend is running
+curl http://localhost:8453/health
 
-- The backend extends the original `business_agent` functionality
-- Frontend builds upon the existing `chat-client` design patterns
-- No redundant code - all features are additive
-- Database is persistent across restarts
-- Ollama provides offline AI capabilities
+# Check UCP endpoint
+curl http://localhost:8453/.well-known/ucp
+```
 
-## License
+### Ollama Connection Issues
+```bash
+# Test Ollama connection
+curl http://192.168.86.41:11434/api/tags
 
-Same as parent project (ucp-sample)
+# Update OLLAMA_URL in chat-backend/.env
+```
 
-## Support
+## 🎓 Learning Resources
 
-For issues and questions:
-- Check API docs at http://localhost:8451/docs
-- Review logs in terminal
-- Ensure Ollama is running with correct model
+- [UCP Specification](https://github.com/Universal-Commerce-Protocol)
+- [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [Ollama Documentation](https://ollama.ai/docs)
+- [LangChain Documentation](https://python.langchain.com/)
+
+## 📄 License
+
+Apache License 2.0
+
+---
+
+**Built with UCP** - Demonstrating how two independent systems can communicate seamlessly over a universal commerce protocol.

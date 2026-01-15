@@ -6,10 +6,10 @@ export default defineConfig({
   server: {
     port: 8450,
     host: '0.0.0.0',
-    allowedHosts: ['chat.abhinava.xyz'], 
+    allowedHosts: ['chat.abhinava.xyz'],
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8452',
+        target: 'http://127.0.0.1:8452',  // Chat backend
         changeOrigin: true,
       }
     }

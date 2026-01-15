@@ -1,12 +1,11 @@
 """
-Enhanced Business Agent Application
-Combines FastAPI backend with Ollama LLM and merchant portal capabilities.
+Merchant Backend - UCP Product Service
+Exposes product catalog via UCP-compliant REST API
 """
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from contextlib import asynccontextmanager
 import uvicorn
@@ -16,7 +15,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from database import db_manager, Product
-from ollama_agent import EnhancedBusinessAgent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,20 +25,6 @@ load_dotenv()
 # ============================================================================
 # Pydantic Models
 # ============================================================================
-
-class ChatMessage(BaseModel):
-    """Chat message from user."""
-    message: str
-    session_id: str = "default"
-    checkout_id: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    """Response from chat agent."""
-    response: str
-    session_id: str
-    status: str
-
 
 class ProductCreate(BaseModel):
     """Model for creating a new product."""
@@ -89,31 +73,19 @@ class ProductResponse(BaseModel):
     updated_at: datetime
 
 
-class CartItem(BaseModel):
-    """Cart item model."""
-    product_id: str
-    sku: str
-    name: str
-    price: float
-    quantity: int
+class UCPProductItem(BaseModel):
+    """UCP-compliant product item."""
+    id: str
+    title: str
+    price: int  # Price in cents
+    image_url: Optional[str] = None
+    description: Optional[str] = None
 
 
-class CheckoutRequest(BaseModel):
-    """Checkout request model."""
-    items: List[CartItem]
-    customer_name: Optional[str] = None
-    customer_email: Optional[EmailStr] = None
-    customer_phone: Optional[str] = None
-
-
-class CheckoutResponse(BaseModel):
-    """Checkout response model."""
-    checkout_id: str
-    items: List[CartItem]
-    total: float
-    currency: str
-    status: str
-    created_at: str
+class UCPSearchResponse(BaseModel):
+    """UCP search response."""
+    items: List[UCPProductItem]
+    total: int
 
 
 # ============================================================================
@@ -125,15 +97,6 @@ async def lifespan(app: FastAPI):
     """Initialize and cleanup application resources."""
     # Startup
     db_manager.init_db()
-
-    # Get configuration from environment variables
-    ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
-    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:latest")
-
-    app.state.agent = EnhancedBusinessAgent(
-        ollama_url=ollama_url,
-        model_name=ollama_model
-    )
 
     # Seed database with sample products if empty
     await seed_initial_products()
@@ -223,8 +186,8 @@ async def seed_initial_products():
 # ============================================================================
 
 app = FastAPI(
-    title="Enhanced Business Agent API",
-    description="AI-powered shopping assistant with merchant portal",
+    title="Merchant Backend API",
+    description="UCP-compliant product catalog and merchant portal",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -249,106 +212,135 @@ async def get_db() -> AsyncSession:
         yield session
 
 
-def get_agent() -> EnhancedBusinessAgent:
-    """Get agent instance."""
-    return app.state.agent
-
-
 # ============================================================================
-# Chat Endpoints
+# Root Endpoint
 # ============================================================================
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(
-    message: ChatMessage,
-    agent: EnhancedBusinessAgent = Depends(get_agent)
-):
-    """
-    Send a message to the shopping assistant agent.
-    """
-    result = await agent.process_message(
-        message=message.message,
-        session_id=message.session_id
-    )
-
-    return ChatResponse(
-        response=result["output"],
-        session_id=result["session_id"],
-        status=result["status"]
-    )
-
-
-@app.post("/api/checkout", response_model=CheckoutResponse, status_code=201)
-async def create_checkout(
-    checkout_request: CheckoutRequest,
-    agent: EnhancedBusinessAgent = Depends(get_agent)
-):
-    """Create a new checkout session and process purchase."""
-    import uuid
-    from datetime import datetime
-
-    # Generate unique checkout ID
-    checkout_id = str(uuid.uuid4())
-
-    # Calculate total
-    total = sum(item.price * item.quantity for item in checkout_request.items)
-
-    # Create checkout session
-    checkout_data = {
-        "checkout_id": checkout_id,
-        "items": [item.dict() for item in checkout_request.items],
-        "total": total,
-        "currency": "USD",
-        "status": "completed",
-        "customer_name": checkout_request.customer_name,
-        "customer_email": checkout_request.customer_email,
-        "customer_phone": checkout_request.customer_phone,
-        "created_at": datetime.now().isoformat()
+@app.get("/")
+async def root():
+    """Root endpoint - provides API information."""
+    return {
+        "service": "Merchant Backend API",
+        "version": "1.0.0",
+        "description": "UCP-compliant product catalog and merchant portal",
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "ucp": {
+                "discovery": "GET /.well-known/ucp",
+                "product_search": "GET /ucp/products/search"
+            },
+            "api": {
+                "list_products": "GET /api/products",
+                "get_product": "GET /api/products/{product_id}",
+                "create_product": "POST /api/products",
+                "update_product": "PUT /api/products/{product_id}",
+                "delete_product": "DELETE /api/products/{product_id}"
+            }
+        },
+        "frontend_url": "http://localhost:3001",
+        "ucp_compliant": True,
+        "status": "running"
     }
 
-    # Store checkout in memory
-    agent.checkouts[checkout_id] = checkout_data
 
-    # Also store as an order for history
-    agent.orders[checkout_id] = checkout_data
+# ============================================================================
+# UCP Endpoints (/.well-known/ucp)
+# ============================================================================
 
-    return CheckoutResponse(
-        checkout_id=checkout_id,
-        items=checkout_request.items,
-        total=total,
-        currency="USD",
-        status="completed",
-        created_at=checkout_data["created_at"]
+@app.get("/.well-known/ucp")
+async def get_ucp_profile():
+    """
+    UCP Discovery Endpoint
+    Returns merchant capabilities and service endpoints
+    """
+    merchant_url = os.getenv("MERCHANT_URL", "http://localhost:8451")
+
+    return {
+        "ucp": {
+            "version": "2026-01-11",
+            "services": {
+                "dev.ucp.shopping": {
+                    "version": "2026-01-11",
+                    "spec": "https://ucp.dev/specs/shopping",
+                    "rest": {
+                        "schema": "https://ucp.dev/services/shopping/openapi.json",
+                        "endpoint": merchant_url
+                    }
+                }
+            },
+            "capabilities": [
+                {
+                    "name": "dev.ucp.shopping.product_search",
+                    "version": "2026-01-11",
+                    "spec": "https://ucp.dev/specs/shopping/product_search",
+                    "schema": "https://ucp.dev/schemas/shopping/product_search.json"
+                }
+            ]
+        },
+        "merchant": {
+            "id": os.getenv("MERCHANT_ID", "merchant-001"),
+            "name": os.getenv("MERCHANT_NAME", "Enhanced Business Store"),
+            "url": merchant_url
+        }
+    }
+
+
+# ============================================================================
+# UCP Product Search Endpoint
+# ============================================================================
+
+@app.get("/ucp/products/search", response_model=UCPSearchResponse)
+async def ucp_search_products(
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 10,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    UCP-compliant product search endpoint.
+    This endpoint can be discovered and called by UCP clients.
+    """
+    query = select(Product).where(Product.is_active == True)
+
+    if q:
+        search_term = f"%{q.lower()}%"
+        query = query.where(
+            (Product.name.ilike(search_term)) |
+            (Product.description.ilike(search_term)) |
+            (Product.category.ilike(search_term))
+        )
+
+    if category:
+        query = query.where(Product.category.ilike(f"%{category}%"))
+
+    query = query.limit(limit)
+    result = await session.execute(query)
+    products = result.scalars().all()
+
+    # Convert to UCP format (prices in cents)
+    items = [
+        UCPProductItem(
+            id=p.id,
+            title=p.name,
+            price=int(p.price * 100),  # Convert to cents
+            image_url=p.image_url,
+            description=p.description
+        )
+        for p in products
+    ]
+
+    return UCPSearchResponse(
+        items=items,
+        total=len(items)
     )
-
-
-@app.get("/api/checkout/{checkout_id}")
-async def get_checkout(
-    checkout_id: str,
-    agent: EnhancedBusinessAgent = Depends(get_agent)
-):
-    """Get current checkout details."""
-    if checkout_id in agent.checkouts:
-        return {"checkout": agent.checkouts[checkout_id]}
-    raise HTTPException(status_code=404, detail="Checkout not found")
-
-
-@app.get("/api/orders/{order_id}")
-async def get_order(
-    order_id: str,
-    agent: EnhancedBusinessAgent = Depends(get_agent)
-):
-    """Get order details."""
-    if order_id in agent.orders:
-        return {"order": agent.orders[order_id]}
-    raise HTTPException(status_code=404, detail="Order not found")
 
 
 # ============================================================================
 # Merchant Portal - Product Management Endpoints
 # ============================================================================
 
-@app.get("/api/merchant/products", response_model=List[ProductResponse])
+@app.get("/api/products", response_model=List[ProductResponse])
 async def list_products(
     skip: int = 0,
     limit: int = 100,
@@ -388,7 +380,7 @@ async def list_products(
     ]
 
 
-@app.get("/api/merchant/products/{product_id}", response_model=ProductResponse)
+@app.get("/api/products/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: str,
     session: AsyncSession = Depends(get_db)
@@ -420,7 +412,7 @@ async def get_product(
     )
 
 
-@app.post("/api/merchant/products", response_model=ProductResponse, status_code=201)
+@app.post("/api/products", response_model=ProductResponse, status_code=201)
 async def create_product(
     product: ProductCreate,
     session: AsyncSession = Depends(get_db)
@@ -480,7 +472,7 @@ async def create_product(
     )
 
 
-@app.put("/api/merchant/products/{product_id}", response_model=ProductResponse)
+@app.put("/api/products/{product_id}", response_model=ProductResponse)
 async def update_product(
     product_id: str,
     product_update: ProductUpdate,
@@ -530,7 +522,7 @@ async def update_product(
     )
 
 
-@app.delete("/api/merchant/products/{product_id}")
+@app.delete("/api/products/{product_id}")
 async def delete_product(
     product_id: str,
     hard_delete: bool = False,
@@ -568,7 +560,7 @@ async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "enhanced-business-agent",
+        "service": "merchant-backend",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -578,7 +570,7 @@ async def health_check():
 # ============================================================================
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8452))
+    port = int(os.getenv("PORT", 8451))
     host = os.getenv("HOST", "0.0.0.0")
 
     uvicorn.run(

@@ -52,7 +52,7 @@ function App() {
 
   const fetchProducts = async () => {
     try {
-      const response = await axios.get('/api/merchant/products')
+      const response = await axios.get('/api/products')
       setProducts(response.data)
     } catch (error) {
       console.error('Error fetching products:', error)
@@ -76,9 +76,9 @@ function App() {
 
     try {
       if (editingId) {
-        await axios.put(`/api/merchant/products/${editingId}`, productData)
+        await axios.put(`/api/products/${editingId}`, productData)
       } else {
-        await axios.post('/api/merchant/products', productData)
+        await axios.post('/api/products', productData)
       }
 
       resetForm()
@@ -113,7 +113,7 @@ function App() {
     if (!confirm('Are you sure you want to delete this product?')) return
 
     try {
-      await axios.delete(`/api/merchant/products/${id}`)
+      await axios.delete(`/api/products/${id}`)
       fetchProducts()
     } catch (error) {
       console.error('Error deleting product:', error)
