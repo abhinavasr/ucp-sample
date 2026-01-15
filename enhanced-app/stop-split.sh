@@ -49,7 +49,7 @@ stop_service "merchant-portal"
 echo ""
 echo "Cleaning up any remaining processes on ports..."
 
-for port in 8450 8451 3000 3001; do
+for port in 8450 8451 8452 8453; do
     pids=$(lsof -ti:$port 2>/dev/null || true)
     if [ -n "$pids" ]; then
         echo "Killing processes on port $port: $pids"
@@ -57,8 +57,25 @@ for port in 8450 8451 3000 3001; do
     fi
 done
 
+# Clean up any orphaned vite/node processes
+echo ""
+echo "Cleaning up orphaned vite and node processes..."
+pkill -f "vite --port 8450" 2>/dev/null || true
+pkill -f "vite --port 8451" 2>/dev/null || true
+pkill -f "esbuild --service" 2>/dev/null || true
+
+# Clean up orphaned python processes
+echo "Cleaning up orphaned python processes..."
+pkill -f "python.*main.py" 2>/dev/null || true
+pkill -f "uvicorn" 2>/dev/null || true
+
+# Clean up log and pid files
+echo "Cleaning up old PID files..."
+rm -f "$PIDS_DIR"/*.pid 2>/dev/null || true
+
 echo ""
 echo "============================================"
 echo "  ✓ All services stopped successfully"
+echo "  ✓ Background processes cleaned up"
 echo "============================================"
 echo ""
