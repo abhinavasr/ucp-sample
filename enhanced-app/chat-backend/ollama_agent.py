@@ -169,20 +169,37 @@ When customers ask about products, I will provide you with the product informati
                 # Try to extract product name from message
                 products = await self.search_products(limit=50)  # Get all products
 
-                # Find matching product
+                # Find matching product with improved matching logic
                 matched_product = None
                 msg_lower = message.lower()
 
+                # Try exact match first
                 for product in products:
                     product_name_lower = product['name'].lower()
-                    # Check for exact or partial match
-                    if product_name_lower in msg_lower or \
-                       any(word in msg_lower for word in product_name_lower.split()):
+                    if product_name_lower in msg_lower:
                         matched_product = product
                         break
 
+                # If no exact match, try word-by-word matching
+                if not matched_product:
+                    max_matches = 0
+                    for product in products:
+                        product_words = set(product['name'].lower().split())
+                        msg_words = set(msg_lower.split())
+                        matches = len(product_words & msg_words)
+
+                        # Require at least 1 matching word
+                        if matches > max_matches:
+                            max_matches = matches
+                            matched_product = product
+
+                    # Only use the match if we found at least one matching word
+                    if max_matches == 0:
+                        matched_product = None
+
                 if matched_product:
                     # Add to cart
+                    logger.info(f"Adding product to cart: {matched_product['name']} (ID: {matched_product['id']}) for session {session_id}")
                     cart_info = self.add_to_cart(
                         session_id=session_id,
                         product_id=matched_product['id'],
@@ -191,10 +208,13 @@ When customers ask about products, I will provide you with the product informati
                         sku=matched_product.get('sku', matched_product['id']),
                         quantity=1
                     )
+                    logger.info(f"Cart updated: {cart_info['item_count']} items, Total: ${cart_info['total']:.2f}")
+                    logger.info(f"Current cart contents: {[item['name'] for item in cart_info['cart']]}")
 
                     cart_action_result = f"\n\n✅ SUCCESS: I have added {matched_product['name']} (${matched_product['price']:.2f}) to your cart!\n"
                     cart_action_result += f"Cart now has {cart_info['item_count']} item(s), Total: ${cart_info['total']:.2f}\n"
                 else:
+                    logger.warning(f"Product not found for message: {message}")
                     cart_action_result = "\n\n❌ I couldn't find that product. Please specify the exact product name from our catalog.\n"
 
             # Add cart context if asking about cart

@@ -21,23 +21,39 @@ Universal Commerce Protocol (UCP).
 
 ## Featured Applications
 
-### Enhanced Business Agent (NEW!)
+### Enhanced Business Agent with AP2 Payment (NEW!)
 
-A production-ready AI-powered shopping assistant with merchant portal capabilities.
+A production-ready AI-powered shopping assistant with UCP product discovery and **complete AP2 payment protocol implementation**.
 
 *   **Application**: [Documentation](enhanced-app/README.md)
     *   Located in `enhanced-app/`.
     *   **Features**:
         *   🤖 AI Chat Interface with Ollama integration (Qwen/Gemma models)
         *   🏪 Merchant Portal for product and pricing management
-        *   💾 Persistent SQLite database
+        *   💳 **Complete AP2 Payment Protocol** ✅
+            *   🔐 WebAuthn Passkey authentication (FIDO2)
+            *   💾 Encrypted payment card storage (Fernet encryption, consumer side only)
+            *   🔒 Token-based payment (merchant never sees raw card numbers)
+            *   📝 Payment mandate creation and passkey signing
+            *   ✅ OTP challenge for high-risk transactions (10-30% probability)
+            *   🎯 Complete payment flow: Registration → Cart → Checkout → Passkey Auth → Payment Receipt
+            *   🛡️ Fixed test card: 5123 1212 2232 5678 (Mastercard)
+        *   💾 Persistent SQLite databases (separate for products and credentials)
         *   🎨 Beautiful modern UI with React and Tailwind CSS
         *   🔧 RESTful API with FastAPI
-        *   📦 Extends existing business_agent and chat-client functionality
+        *   📦 Dual Protocol: UCP for commerce + AP2 for payment
+    *   **Architecture**:
+        *   **Chat Backend (8452)** - UCP Client + Credentials Provider (stores user credentials, cards, passkeys)
+        *   **Merchant Backend (8453)** - UCP Server (products) + AP2 Merchant Agent (payment processor with Ollama)
+        *   **Separation of Concerns**: User credentials never touch merchant backend
     *   **Ports**:
         *   Port 8450 → Chat Interface (maps to https://chat.abhinava.xyz)
-        *   Port 8451 → Merchant Portal + API (maps to https://app.abhinava.xyz)
-    *   Quick start: `cd enhanced-app && ./start.sh`
+        *   Port 8451 → Merchant Portal (maps to https://app.abhinava.xyz)
+        *   Port 8452 → Chat Backend API (credentials provider + AP2 consumer agent)
+        *   Port 8453 → Merchant Backend API (UCP server + AP2 merchant agent)
+    *   **Quick Start**: `cd enhanced-app && ./start-split.sh`
+    *   **Stop Services**: `cd enhanced-app && ./stop-split.sh`
+    *   **Status**: ✅ **FULLY IMPLEMENTED** - UCP product discovery, AI chat, cart management, user registration with passkey, payment card storage, AP2 payment flow with OTP challenge, checkout UI
 
 ## Sample Implementations
 

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
-import { Send, ShoppingCart, Sparkles, Bot, User } from 'lucide-react'
+import { Send, ShoppingCart, Sparkles, Bot, User, UserPlus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import RegisterPage from './RegisterPage'
+import CheckoutPopup from './CheckoutPopup'
 
 interface Message {
   id: string
@@ -15,6 +17,10 @@ function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionId] = useState(`session-${Date.now()}`)
+  const [showRegister, setShowRegister] = useState(false)
+  const [showCheckout, setShowCheckout] = useState(false)
+  const [userEmail, setUserEmail] = useState('')
+  const [isRegistered, setIsRegistered] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -26,11 +32,20 @@ function App() {
   }, [messages])
 
   useEffect(() => {
+    // Check if user is registered (check localStorage)
+    const savedEmail = localStorage.getItem('userEmail')
+    if (savedEmail) {
+      setUserEmail(savedEmail)
+      setIsRegistered(true)
+    }
+
     // Add welcome message
     setMessages([
       {
         id: '1',
-        content: "👋 Hello! I'm your AI Shopping Assistant powered by Ollama. I can help you find products, manage your cart, and complete your purchase. What are you looking for today?",
+        content: isRegistered
+          ? `👋 Welcome back! I'm your AI Shopping Assistant. Ready to help you shop. What are you looking for today?`
+          : "👋 Hello! I'm your AI Shopping Assistant powered by Ollama. I can help you find products, manage your cart, and complete your purchase. To use secure checkout with AP2 payment, please register first!",
         role: 'assistant',
         timestamp: new Date()
       }
@@ -39,6 +54,21 @@ function App() {
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return
+
+    // Check if user is trying to checkout
+    const checkoutKeywords = ['checkout', 'pay', 'purchase', 'buy now', 'complete order']
+    const isCheckoutIntent = checkoutKeywords.some(keyword => input.toLowerCase().includes(keyword))
+
+    if (isCheckoutIntent && !isRegistered) {
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        content: "To complete checkout, please register first. Click the 'Register' button in the header to create your account with secure passkey authentication.",
+        role: 'assistant',
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, errorMessage])
+      return
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -65,6 +95,11 @@ function App() {
       }
 
       setMessages(prev => [...prev, assistantMessage])
+
+      // If checkout intent detected and user is registered, open checkout popup
+      if (isCheckoutIntent && isRegistered) {
+        setTimeout(() => setShowCheckout(true), 500)
+      }
     } catch (error) {
       console.error('Error sending message:', error)
       const errorMessage: Message = {
@@ -79,11 +114,36 @@ function App() {
     }
   }
 
+  const handleRegistrationComplete = (email: string) => {
+    setUserEmail(email)
+    setIsRegistered(true)
+    localStorage.setItem('userEmail', email)
+    setShowRegister(false)
+
+    // Add success message
+    const successMessage: Message = {
+      id: Date.now().toString(),
+      content: `Great! Your account has been set up successfully. You can now browse products and use secure checkout with your passkey. What would you like to shop for?`,
+      role: 'assistant',
+      timestamp: new Date()
+    }
+    setMessages(prev => [...prev, successMessage])
+  }
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
+  }
+
+  if (showRegister) {
+    return (
+      <RegisterPage
+        onRegistrationComplete={handleRegistrationComplete}
+        onBackToChat={() => setShowRegister(false)}
+      />
+    )
   }
 
   return (
@@ -97,18 +157,31 @@ function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-gray-800">AI Shopping Assistant</h1>
-              <p className="text-sm text-gray-500">Powered by Ollama</p>
+              <p className="text-sm text-gray-500">
+                {isRegistered ? `Logged in as ${userEmail}` : 'Powered by Ollama'}
+              </p>
             </div>
           </div>
-          <a
-            href="https://app.abhinava.xyz"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors"
-          >
-            <ShoppingCart className="w-5 h-5" />
-            <span className="font-medium">Merchant Portal</span>
-          </a>
+          <div className="flex items-center space-x-4">
+            {!isRegistered && (
+              <button
+                onClick={() => setShowRegister(true)}
+                className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
+              >
+                <UserPlus className="w-5 h-5" />
+                <span>Register</span>
+              </button>
+            )}
+            <a
+              href="https://app.abhinava.xyz"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center space-x-2 text-gray-600 hover:text-gray-700 transition-colors"
+            >
+              <ShoppingCart className="w-5 h-5" />
+              <span className="font-medium">Merchant Portal</span>
+            </a>
+          </div>
         </div>
       </header>
 
@@ -248,6 +321,16 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Checkout Popup */}
+      {isRegistered && (
+        <CheckoutPopup
+          isOpen={showCheckout}
+          onClose={() => setShowCheckout(false)}
+          sessionId={sessionId}
+          userEmail={userEmail}
+        />
+      )}
     </div>
   )
 }

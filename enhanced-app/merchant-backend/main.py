@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 from database import db_manager, Product
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
+from merchant_payment_agent import MerchantPaymentAgent
+from ap2_types import PaymentMandate as AP2PaymentMandate, PaymentReceipt as AP2PaymentReceipt, OTPVerification
 
 # Load environment variables
 load_dotenv()
@@ -100,6 +103,14 @@ async def lifespan(app: FastAPI):
 
     # Seed database with sample products if empty
     await seed_initial_products()
+
+    # Initialize AP2 Merchant Payment Agent
+    ollama_url = os.getenv("OLLAMA_URL", "http://192.168.86.41:11434")
+    ollama_model = os.getenv("AP2_MERCHANT_MODEL", "qwen2.5:8b")
+    app.state.payment_agent = MerchantPaymentAgent(
+        ollama_url=ollama_url,
+        model_name=ollama_model
+    )
 
     yield
 
@@ -549,6 +560,78 @@ async def delete_product(
     await session.commit()
 
     return {"message": "Product deleted successfully", "product_id": product_id}
+
+
+# ============================================================================
+# AP2 Payment Processing Endpoints (Merchant Agent)
+# ============================================================================
+
+def get_payment_agent() -> MerchantPaymentAgent:
+    """Get payment agent instance."""
+    return app.state.payment_agent
+
+
+@app.post("/ap2/payment/process", response_model=AP2PaymentReceipt)
+async def process_payment_mandate(
+    mandate: AP2PaymentMandate,
+    payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
+):
+    """
+    Process AP2 payment mandate from consumer (chat backend).
+
+    Flow:
+    1. Validate mandate signature
+    2. Check if OTP challenge needed
+    3. Process payment or return OTP challenge
+    """
+    # Check if OTP challenge should be raised
+    if payment_agent.should_raise_otp_challenge(mandate):
+        challenge = payment_agent.create_otp_challenge(mandate)
+        # Return as error status with OTP info
+        return AP2PaymentReceipt(
+            payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
+            timestamp=datetime.utcnow().isoformat(),
+            payment_id="PENDING-OTP",
+            amount=mandate.payment_mandate_contents.payment_details_total.amount,
+            payment_status=PaymentReceiptError(
+                error_message=f"OTP_REQUIRED:{challenge.message}"
+            ),
+            payment_method_details={"otp_challenge": challenge.dict()}
+        )
+
+    # Process payment
+    receipt = payment_agent.process_payment(mandate)
+    return receipt
+
+
+@app.post("/ap2/payment/verify-otp", response_model=AP2PaymentReceipt)
+async def verify_otp_and_process(
+    mandate: AP2PaymentMandate,
+    otp_verification: OTPVerification,
+    payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
+):
+    """
+    Verify OTP and process payment.
+    Called after user provides OTP code.
+    """
+    # Verify OTP
+    if not payment_agent.verify_otp(
+        otp_verification.payment_mandate_id,
+        otp_verification.otp_code
+    ):
+        return AP2PaymentReceipt(
+            payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
+            timestamp=datetime.utcnow().isoformat(),
+            payment_id="ERR-INVALID-OTP",
+            amount=mandate.payment_mandate_contents.payment_details_total.amount,
+            payment_status=PaymentReceiptFailure(
+                failure_message="Invalid OTP code"
+            )
+        )
+
+    # OTP verified, process payment
+    receipt = payment_agent.process_payment(mandate)
+    return receipt
 
 
 # ============================================================================

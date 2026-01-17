@@ -1,6 +1,6 @@
-# Enhanced Business Agent - Split Architecture with UCP
+# Enhanced Business Agent - Split Architecture with UCP + AP2
 
-This is a production-ready implementation demonstrating **two separate systems** communicating over the **Universal Commerce Protocol (UCP)**.
+This is a production-ready implementation demonstrating **two separate systems** communicating over the **Universal Commerce Protocol (UCP)** for product discovery and the **Agentic Payment Protocol (AP2)** for secure payment processing.
 
 ## 🏗️ Architecture Overview
 
@@ -19,45 +19,60 @@ The application is split into two independent backends that communicate via UCP:
                │ HTTP                         │ HTTP
                │                              │
 ┌──────────────▼───────────────┐  ┌──────────▼───────────────────┐
-│   Chat Backend (Port 8450)   │  │ Merchant Backend (Port 8451) │
+│   Chat Backend (Port 8452)   │  │ Merchant Backend (Port 8453) │
 │   ========================   │  │ ===========================  │
 │   • UCP Client               │  │ • UCP Server                 │
+│   • AP2 Consumer Agent       │  │ • AP2 Merchant Agent         │
+│   • Credentials Provider     │  │ • Payment Processor          │
 │   • FastAPI                  │  │ • FastAPI                    │
-│   • Ollama LLM Integration   │  │ • SQLite Database            │
-│   • Shopping Assistant       │  │ • Product Catalog            │
-│   • Session Management       │  │ • CRUD API                   │
+│   • Ollama LLM Integration   │  │ • Ollama (Merchant Agent)    │
+│   • Shopping Assistant       │  │ • SQLite Database            │
+│   • WebAuthn Passkeys        │  │ • Product Catalog            │
+│   • Encrypted Card Storage   │  │ • CRUD API                   │
 └──────────────┬───────────────┘  └──────────▲───────────────────┘
                │                              │
                │    UCP REST Protocol         │
+               │    /.well-known/ucp          │
+               │    /ucp/products/search      │
+               │                              │
+               │    AP2 Payment Protocol      │
+               │    /ap2/payment/process      │
                └──────────────────────────────┘
-                    /.well-known/ucp
-                    /ucp/products/search
 ```
 
 ### Key Components
 
-#### 1. **Chat Backend** (Port 8450) - UCP Client
-- **Role**: Consumer/Client
-- **Technology**: FastAPI + Ollama LLM + LangChain
+#### 1. **Chat Backend** (Port 8452) - UCP Client + AP2 Consumer Agent
+- **Role**: Consumer/Client + Credentials Provider
+- **Technology**: FastAPI + Ollama LLM + SQLAlchemy + Cryptography
 - **Responsibilities**:
-  - AI-powered chat interface
-  - Natural language processing
+  - AI-powered chat interface with Ollama
+  - Natural language processing for shopping
   - Shopping cart management
-  - Checkout session handling
-  - **UCP Client**: Discovers and queries merchant backend
+  - **UCP Client**: Discovers and queries merchant backend for products
+  - **AP2 Consumer Agent**: Creates and signs payment mandates
+  - **Credentials Provider**: Stores user accounts, payment cards (encrypted), and passkeys
+  - WebAuthn/FIDO2 passkey authentication
+  - Payment mandate creation and signing
+  - Separate SQLite database for user credentials (`chat_app.db`)
 
-#### 2. **Merchant Backend** (Port 8451) - UCP Server
-- **Role**: Provider/Server
-- **Technology**: FastAPI + SQLAlchemy + SQLite
+#### 2. **Merchant Backend** (Port 8453) - UCP Server + AP2 Merchant Agent
+- **Role**: Provider/Server + Payment Processor
+- **Technology**: FastAPI + SQLAlchemy + SQLite + Ollama
 - **Responsibilities**:
   - Product catalog management
-  - Database persistence
-  - UCP-compliant REST API
-  - **UCP Server**: Exposes discovery endpoint and product search
+  - Database persistence for products
+  - **UCP Server**: Exposes `.well-known/ucp` discovery and `/ucp/products/search`
+  - **AP2 Merchant Agent**: Processes payment mandates with Ollama-powered decision making
+  - Payment validation and processing
+  - OTP challenge generation (10-30% of transactions)
+  - Payment receipt issuance
+  - Separate SQLite database for products (`enhanced_app.db`)
+  - **Security**: Never stores or sees raw payment card numbers (token-based only)
 
 #### 3. **Frontend Applications**
-- **Chat Frontend** (Port 3000): Customer-facing shopping interface
-- **Merchant Portal** (Port 3001): Admin interface for product management
+- **Chat Frontend** (Port 8450): Customer-facing shopping interface with registration, checkout, and passkey auth
+- **Merchant Portal** (Port 8451): Admin interface for product management
 
 ## 🔌 UCP Integration
 
@@ -139,6 +154,161 @@ GET http://localhost:8451/ucp/products/search?q=cookies&limit=5
   "total": 1
 }
 ```
+
+## 💳 AP2 Payment Protocol Integration
+
+This application implements the **Agentic Payment Protocol (AP2)** for secure, passkey-authenticated payments.
+
+### AP2 Architecture
+
+The payment flow follows AP2 specification with clear separation between consumer agent (credentials provider) and merchant agent (payment processor):
+
+```
+User Registration Flow:
+1. User → Chat Frontend: Register with email + display name
+2. Chat Frontend → Browser: Trigger WebAuthn passkey creation
+3. Browser: Create FIDO2 credential
+4. Chat Frontend → Chat Backend: /api/auth/register (email, passkey credential)
+5. Chat Backend: Store user + encrypted default card (5123 1212 2232 5678)
+
+Payment Flow:
+1. User → Chat Frontend: "I want to checkout"
+2. Chat Frontend → Chat Backend: POST /api/payment/prepare-checkout
+3. Chat Backend: Create unsigned payment mandate
+4. Chat Frontend → User: Show checkout popup (cart, masked card, total)
+5. User → Chat Frontend: Click "Confirm Payment with Passkey"
+6. Chat Frontend → Browser: Request WebAuthn assertion
+7. Browser: User authenticates with biometrics
+8. Chat Frontend → Chat Backend: POST /api/payment/confirm-checkout (signed mandate)
+9. Chat Backend → Merchant Backend: POST /ap2/payment/process (AP2 mandate)
+10. Merchant Backend (AP2 Agent): Validate signature, check fraud risk
+11a. If low risk → Payment approved → Receipt returned
+11b. If high risk → OTP challenge → Receipt with OTP_REQUIRED
+12. (If OTP) User → Chat Frontend: Enter 6-digit OTP
+13. Chat Frontend → Chat Backend: POST /api/payment/verify-otp
+14. Chat Backend → Merchant Backend: POST /ap2/payment/verify-otp
+15. Merchant Backend: Verify OTP → Process payment → Receipt
+16. Chat Frontend: Show success with payment ID
+```
+
+### AP2 Endpoints
+
+#### Chat Backend (Consumer Agent)
+
+```bash
+# Authentication & Registration
+POST /api/auth/challenge           # Get WebAuthn challenge
+POST /api/auth/register            # Register user with passkey + default card
+POST /api/auth/verify-passkey      # Verify passkey signature
+
+# Payment Card Management
+GET /api/payment/cards             # List user's payment cards (masked)
+GET /api/payment/cards/default     # Get default payment card
+
+# AP2 Payment Mandates
+POST /api/payment/prepare-checkout # Create unsigned payment mandate
+POST /api/payment/confirm-checkout # Sign mandate and send to merchant
+POST /api/payment/verify-otp       # Verify OTP and complete payment
+```
+
+#### Merchant Backend (Merchant Agent)
+
+```bash
+# AP2 Payment Processing
+POST /ap2/payment/process          # Process signed payment mandate
+POST /ap2/payment/verify-otp       # Verify OTP and complete payment
+```
+
+### AP2 Payment Mandate Structure
+
+```json
+{
+  "payment_mandate_contents": {
+    "payment_mandate_id": "PM-1A2B3C4D5E6F7890",
+    "timestamp": "2026-01-17T10:30:00.000000",
+    "payment_details_id": "REQ-A1B2C3D4E5F6",
+    "payment_details_total": {
+      "label": "Total",
+      "amount": {
+        "currency": "USD",
+        "value": 15.99
+      }
+    },
+    "payment_response": {
+      "request_id": "REQ-A1B2C3D4E5F6",
+      "method_name": "CARD",
+      "details": {
+        "token": "TOK-1234567890abcdef",
+        "card_last_four": "5678",
+        "card_network": "mastercard"
+      },
+      "payer_email": "user@example.com",
+      "payer_name": "John Doe"
+    },
+    "merchant_agent": "merchant-001"
+  },
+  "user_authorization": "base64_encoded_passkey_signature"
+}
+```
+
+### AP2 Payment Receipt
+
+**Success:**
+```json
+{
+  "payment_mandate_id": "PM-1A2B3C4D5E6F7890",
+  "payment_id": "PAY-ABC123456789",
+  "amount": {"currency": "USD", "value": 15.99},
+  "payment_status": {
+    "status_code": "SUCCESS",
+    "message": "Payment processed successfully"
+  },
+  "timestamp": "2026-01-17T10:30:05.000000"
+}
+```
+
+**OTP Challenge:**
+```json
+{
+  "payment_mandate_id": "PM-1A2B3C4D5E6F7890",
+  "payment_status": {
+    "error_message": "OTP_REQUIRED:Additional verification required. Please enter the 6-digit OTP code."
+  },
+  "payment_method_details": {
+    "otp_challenge": {
+      "payment_mandate_id": "PM-1A2B3C4D5E6F7890",
+      "message": "Enter 6-digit OTP for verification"
+    }
+  }
+}
+```
+
+### Security Features
+
+1. **WebAuthn Passkey Authentication** (FIDO2)
+   - Biometric authentication (fingerprint/face)
+   - No passwords stored
+   - Phishing-resistant
+
+2. **Encrypted Card Storage** (Fernet symmetric encryption)
+   - Card numbers encrypted at rest
+   - Only decrypted for payment processing
+   - Merchant never sees raw card numbers
+
+3. **Token-Based Payment**
+   - Opaque tokens sent to merchant
+   - Merchant only sees: last 4 digits, card network, token
+   - Full card number stays with consumer agent
+
+4. **OTP Challenge** (Risk-Based)
+   - 10% probability for amounts < $100
+   - 30% probability for amounts ≥ $100
+   - Additional verification layer
+
+5. **Separation of Credentials**
+   - Consumer agent stores: users, cards, passkeys
+   - Merchant agent stores: products only
+   - Zero trust architecture
 
 ## 🚀 Quick Start
 

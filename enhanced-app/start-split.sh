@@ -83,6 +83,7 @@ deps = [
     'aiosqlite>=0.19.0',
     'python-dotenv>=1.0.0',
     'httpx>=0.26.0',
+    'cryptography>=41.0.0',
 ]
 for dep in deps:
     print(dep)
@@ -124,6 +125,9 @@ deps = [
     'httpx>=0.26.0',
     'langchain-ollama>=0.1.0',
     'langchain-core>=0.2.0',
+    'sqlalchemy>=2.0.0',
+    'aiosqlite>=0.19.0',
+    'cryptography>=41.0.0',
 ]
 for dep in deps:
     print(dep)

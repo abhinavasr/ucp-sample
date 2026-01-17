@@ -1,6 +1,7 @@
 """
 Chat Backend - AI Shopping Assistant
 Uses UCP client to communicate with Merchant Backend
+Acts as Credentials Provider for AP2 payment protocol
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -13,8 +14,20 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
+import uuid
+import json
 
 from ollama_agent import EnhancedBusinessAgent
+from database import db_manager, User, PaymentCard, PaymentMandate, PaymentReceipt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from payment_utils import (
+    card_encryptor,
+    webauthn_verifier,
+    token_generator,
+    otp_manager
+)
+from ap2_client import AP2Client
 
 # Load environment variables
 load_dotenv()
@@ -70,6 +83,60 @@ class CheckoutResponse(BaseModel):
 
 
 # ============================================================================
+# Payment & Authentication Models
+# ============================================================================
+
+class UserRegistration(BaseModel):
+    """Model for user registration with passkey."""
+    email: str
+    display_name: str
+    client_data_json: str  # WebAuthn client data
+    attestation_object: str  # WebAuthn attestation
+    challenge: str
+
+
+class UserRegistrationResponse(BaseModel):
+    """Response for user registration."""
+    user_id: str
+    email: str
+    display_name: str
+    credential_id: str
+    default_card: Dict[str, Any]
+
+
+class ChallengeRequest(BaseModel):
+    """Request for WebAuthn challenge."""
+    email: str
+
+
+class ChallengeResponse(BaseModel):
+    """Response with WebAuthn challenge."""
+    challenge: str
+    timeout: int = 60000  # 60 seconds
+
+
+class PasskeyVerification(BaseModel):
+    """Model for passkey verification."""
+    email: str
+    credential_id: str
+    client_data_json: str
+    authenticator_data: str
+    signature: str
+    challenge: str
+
+
+class PaymentCardResponse(BaseModel):
+    """Response model for payment card (masked)."""
+    id: str
+    user_email: str
+    card_last_four: str
+    card_network: str
+    card_holder_name: Optional[str]
+    is_default: bool
+    created_at: str
+
+
+# ============================================================================
 # Application Lifecycle
 # ============================================================================
 
@@ -81,6 +148,10 @@ async def lifespan(app: FastAPI):
     ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:latest")
     merchant_url = os.getenv("MERCHANT_BACKEND_URL", "http://localhost:8451")
 
+    # Initialize database for user credentials
+    db_manager.init_db()
+    logger.info("Chat backend database initialized")
+
     app.state.agent = EnhancedBusinessAgent(
         ollama_url=ollama_url,
         model_name=ollama_model,
@@ -91,10 +162,15 @@ async def lifespan(app: FastAPI):
     await app.state.agent.initialize()
     logger.info(f"Chat backend initialized with merchant at {merchant_url}")
 
+    # Initialize AP2 client
+    app.state.ap2_client = AP2Client(merchant_url)
+    logger.info("AP2 client initialized")
+
     yield
 
     # Shutdown
     await app.state.agent.cleanup()
+    await app.state.ap2_client.cleanup()
     logger.info("Chat backend shutdown complete")
 
 
@@ -126,6 +202,12 @@ app.add_middleware(
 def get_agent() -> EnhancedBusinessAgent:
     """Get agent instance."""
     return app.state.agent
+
+
+async def get_db() -> AsyncSession:
+    """Get database session."""
+    async for session in db_manager.get_session():
+        yield session
 
 
 # ============================================================================
@@ -280,6 +362,469 @@ async def clear_cart(
     """Clear cart for a session."""
     agent.clear_cart(session_id)
     return {"message": "Cart cleared successfully"}
+
+
+# ============================================================================
+# Authentication & User Endpoints (Credentials Provider)
+# ============================================================================
+
+@app.post("/api/auth/challenge", response_model=ChallengeResponse)
+async def get_registration_challenge(request: ChallengeRequest):
+    """Generate WebAuthn challenge for registration or authentication."""
+    challenge = webauthn_verifier.generate_challenge()
+    return ChallengeResponse(challenge=challenge)
+
+
+@app.post("/api/auth/register", response_model=UserRegistrationResponse, status_code=201)
+async def register_user(
+    registration: UserRegistration,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Register a new user with WebAuthn passkey.
+    Automatically creates default payment card (5123 1212 2232 5678).
+    This chat backend acts as the Credentials Provider in AP2.
+    """
+    # Check if user already exists
+    result = await session.execute(
+        select(User).where(User.email == registration.email)
+    )
+    existing_user = result.scalar_one_or_none()
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User already registered")
+
+    # Verify WebAuthn registration
+    verification = webauthn_verifier.verify_registration(
+        client_data_json=registration.client_data_json,
+        attestation_object=registration.attestation_object,
+        challenge=registration.challenge
+    )
+
+    if not verification.get("valid"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid WebAuthn registration: {verification.get('error', 'Unknown error')}"
+        )
+
+    # Create user
+    user_id = str(uuid.uuid4())
+    new_user = User(
+        id=user_id,
+        email=registration.email,
+        display_name=registration.display_name,
+        passkey_credential_id=verification["credential_id"],
+        passkey_public_key=verification["public_key"]
+    )
+
+    session.add(new_user)
+
+    # Create default payment card (5123 1212 2232 5678 - Mastercard test card)
+    default_card_number = "5123 1212 2232 5678"
+    encrypted_card = card_encryptor.encrypt_card_number(default_card_number)
+    last_four = card_encryptor.get_last_four(default_card_number)
+    card_network = card_encryptor.detect_card_network(default_card_number)
+
+    card_id = str(uuid.uuid4())
+    payment_card = PaymentCard(
+        id=card_id,
+        user_id=user_id,
+        user_email=registration.email,
+        card_number_encrypted=encrypted_card,
+        card_last_four=last_four,
+        card_network=card_network,
+        card_holder_name=registration.display_name,
+        expiry_month=12,
+        expiry_year=2028,
+        is_default=True
+    )
+
+    session.add(payment_card)
+    await session.commit()
+    await session.refresh(new_user)
+    await session.refresh(payment_card)
+
+    logger.info(f"User registered: {registration.email} with default card ending {last_four}")
+
+    return UserRegistrationResponse(
+        user_id=user_id,
+        email=registration.email,
+        display_name=registration.display_name,
+        credential_id=verification["credential_id"],
+        default_card=payment_card.to_dict(masked=True)
+    )
+
+
+@app.post("/api/auth/verify-passkey")
+async def verify_passkey(
+    verification: PasskeyVerification,
+    session: AsyncSession = Depends(get_db)
+):
+    """Verify passkey authentication for payment mandate signing."""
+    # Get user by email and credential ID
+    result = await session.execute(
+        select(User).where(
+            User.email == verification.email,
+            User.passkey_credential_id == verification.credential_id
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Verify authentication
+    is_valid = webauthn_verifier.verify_authentication(
+        credential_id=verification.credential_id,
+        client_data_json=verification.client_data_json,
+        authenticator_data=verification.authenticator_data,
+        signature=verification.signature,
+        public_key=user.passkey_public_key,
+        challenge=verification.challenge
+    )
+
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
+
+    return {
+        "valid": True,
+        "user_id": user.id,
+        "email": user.email,
+        "display_name": user.display_name
+    }
+
+
+# ============================================================================
+# Payment Card Endpoints (Credentials Provider)
+# ============================================================================
+
+@app.get("/api/payment/cards", response_model=List[PaymentCardResponse])
+async def list_user_cards(
+    user_email: str,
+    session: AsyncSession = Depends(get_db)
+):
+    """List all payment cards for a user (masked)."""
+    result = await session.execute(
+        select(PaymentCard).where(
+            PaymentCard.user_email == user_email,
+            PaymentCard.is_active == True
+        )
+    )
+    cards = result.scalars().all()
+
+    return [
+        PaymentCardResponse(
+            id=card.id,
+            user_email=card.user_email,
+            card_last_four=card.card_last_four,
+            card_network=card.card_network,
+            card_holder_name=card.card_holder_name,
+            is_default=card.is_default,
+            created_at=card.created_at.isoformat() if card.created_at else ""
+        )
+        for card in cards
+    ]
+
+
+@app.get("/api/payment/cards/default", response_model=PaymentCardResponse)
+async def get_default_card(
+    user_email: str,
+    session: AsyncSession = Depends(get_db)
+):
+    """Get user's default payment card (masked)."""
+    result = await session.execute(
+        select(PaymentCard).where(
+            PaymentCard.user_email == user_email,
+            PaymentCard.is_default == True,
+            PaymentCard.is_active == True
+        )
+    )
+    card = result.scalar_one_or_none()
+
+    if not card:
+        raise HTTPException(status_code=404, detail="No default card found")
+
+    return PaymentCardResponse(
+        id=card.id,
+        user_email=card.user_email,
+        card_last_four=card.card_last_four,
+        card_network=card.card_network,
+        card_holder_name=card.card_holder_name,
+        is_default=card.is_default,
+        created_at=card.created_at.isoformat() if card.created_at else ""
+    )
+
+
+# ============================================================================
+# AP2 Payment Mandate Endpoints (Consumer Agent)
+# ============================================================================
+
+def get_ap2_client() -> AP2Client:
+    """Get AP2 client instance."""
+    return app.state.ap2_client
+
+
+class PrepareCheckoutRequest(BaseModel):
+    """Request to prepare checkout with payment mandate."""
+    session_id: str
+    user_email: str
+
+
+class PrepareCheckoutResponse(BaseModel):
+    """Response with unsigned payment mandate."""
+    mandate_id: str
+    mandate_data: Dict[str, Any]
+    cart_total: float
+    default_card: Dict[str, Any]
+
+
+class ConfirmCheckoutRequest(BaseModel):
+    """Request to confirm checkout with signed mandate."""
+    mandate_id: str
+    user_signature: str  # WebAuthn signature
+    user_email: str
+
+
+class ConfirmCheckoutResponse(BaseModel):
+    """Response after payment processing."""
+    status: str  # "success", "otp_required", "failed"
+    receipt: Optional[Dict[str, Any]] = None
+    otp_challenge: Optional[Dict[str, Any]] = None
+    message: str
+
+
+class VerifyOTPRequest(BaseModel):
+    """Request to verify OTP and complete payment."""
+    mandate_id: str
+    otp_code: str
+    user_email: str
+
+
+@app.post("/api/payment/prepare-checkout", response_model=PrepareCheckoutResponse)
+async def prepare_checkout(
+    request: PrepareCheckoutRequest,
+    agent: EnhancedBusinessAgent = Depends(get_agent),
+    ap2_client: AP2Client = Depends(get_ap2_client),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Prepare checkout - create unsigned payment mandate.
+    Returns cart info and default card for user to review before signing.
+    """
+    # Get cart from session
+    cart_info = agent.get_cart(request.session_id)
+    if not cart_info or not cart_info.get("items"):
+        raise HTTPException(status_code=400, detail="Cart is empty")
+
+    # Get user's default card
+    result = await session.execute(
+        select(PaymentCard).where(
+            PaymentCard.user_email == request.user_email,
+            PaymentCard.is_default == True,
+            PaymentCard.is_active == True
+        )
+    )
+    card = result.scalar_one_or_none()
+
+    if not card:
+        raise HTTPException(status_code=404, detail="No payment card found. Please register first.")
+
+    # Create payment mandate (unsigned)
+    mandate = ap2_client.create_payment_mandate(
+        cart_data=cart_info,
+        payment_card=card.to_dict(masked=True),
+        user_email=request.user_email
+    )
+
+    # Store mandate in database (pending signature)
+    mandate_id = mandate["payment_mandate_contents"]["payment_mandate_id"]
+    db_mandate = PaymentMandate(
+        id=mandate_id,
+        user_id=card.user_id,
+        user_email=request.user_email,
+        cart_id=request.session_id,
+        payment_card_id=card.id,
+        total_amount=cart_info["total"],
+        currency="USD",
+        mandate_data=json.dumps(mandate),
+        status="pending"
+    )
+
+    session.add(db_mandate)
+    await session.commit()
+
+    logger.info(f"Prepared checkout for {request.user_email}: mandate {mandate_id}")
+
+    return PrepareCheckoutResponse(
+        mandate_id=mandate_id,
+        mandate_data=mandate,
+        cart_total=cart_info["total"],
+        default_card=card.to_dict(masked=True)
+    )
+
+
+@app.post("/api/payment/confirm-checkout", response_model=ConfirmCheckoutResponse)
+async def confirm_checkout(
+    request: ConfirmCheckoutRequest,
+    ap2_client: AP2Client = Depends(get_ap2_client),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Confirm checkout - sign mandate and send to merchant for payment processing.
+    """
+    # Get mandate from database
+    result = await session.execute(
+        select(PaymentMandate).where(
+            PaymentMandate.id == request.mandate_id,
+            PaymentMandate.user_email == request.user_email
+        )
+    )
+    db_mandate = result.scalar_one_or_none()
+
+    if not db_mandate:
+        raise HTTPException(status_code=404, detail="Payment mandate not found")
+
+    if db_mandate.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Mandate already {db_mandate.status}")
+
+    # Add signature to mandate
+    mandate_data = json.loads(db_mandate.mandate_data)
+    mandate_data["user_authorization"] = request.user_signature
+
+    # Update mandate in database
+    db_mandate.user_signature = request.user_signature
+    db_mandate.status = "signed"
+    db_mandate.signed_at = datetime.utcnow()
+    db_mandate.mandate_data = json.dumps(mandate_data)
+    await session.commit()
+
+    # Send to merchant's AP2 payment processor
+    try:
+        receipt = await ap2_client.send_payment_mandate(mandate_data)
+
+        # Check if OTP challenge
+        otp_challenge = ap2_client.extract_otp_challenge(receipt)
+        if otp_challenge:
+            db_mandate.status = "otp_required"
+            await session.commit()
+
+            logger.info(f"OTP challenge for mandate {request.mandate_id}")
+            return ConfirmCheckoutResponse(
+                status="otp_required",
+                otp_challenge=otp_challenge,
+                message="OTP verification required. Please enter the code sent to your email."
+            )
+
+        # Payment successful
+        db_mandate.status = "completed"
+        db_mandate.completed_at = datetime.utcnow()
+
+        # Store receipt
+        receipt_id = f"RCP-{uuid.uuid4().hex[:12].upper()}"
+        db_receipt = PaymentReceipt(
+            id=receipt_id,
+            payment_mandate_id=request.mandate_id,
+            confirmation_id=receipt.get("payment_id", "UNKNOWN"),
+            amount=receipt["amount"]["value"],
+            currency=receipt["amount"]["currency"],
+            status="success",
+            receipt_data=json.dumps(receipt)
+        )
+
+        session.add(db_receipt)
+        await session.commit()
+
+        logger.info(f"Payment successful for mandate {request.mandate_id}")
+        return ConfirmCheckoutResponse(
+            status="success",
+            receipt=receipt,
+            message="Payment completed successfully!"
+        )
+
+    except Exception as e:
+        db_mandate.status = "failed"
+        await session.commit()
+
+        logger.error(f"Payment failed for mandate {request.mandate_id}: {e}")
+        return ConfirmCheckoutResponse(
+            status="failed",
+            message=f"Payment failed: {str(e)}"
+        )
+
+
+@app.post("/api/payment/verify-otp", response_model=ConfirmCheckoutResponse)
+async def verify_otp_and_complete(
+    request: VerifyOTPRequest,
+    ap2_client: AP2Client = Depends(get_ap2_client),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Verify OTP and complete payment.
+    """
+    # Get mandate
+    result = await session.execute(
+        select(PaymentMandate).where(
+            PaymentMandate.id == request.mandate_id,
+            PaymentMandate.user_email == request.user_email
+        )
+    )
+    db_mandate = result.scalar_one_or_none()
+
+    if not db_mandate or db_mandate.status != "otp_required":
+        raise HTTPException(status_code=400, detail="Invalid mandate state")
+
+    # Get mandate data
+    mandate_data = json.loads(db_mandate.mandate_data)
+
+    # Send OTP to merchant
+    try:
+        receipt = await ap2_client.verify_otp_and_process(mandate_data, request.otp_code)
+
+        # Check status
+        payment_status = receipt.get("payment_status", {})
+        if "merchant_confirmation_id" in payment_status:
+            # Success
+            db_mandate.status = "completed"
+            db_mandate.completed_at = datetime.utcnow()
+
+            # Store receipt
+            receipt_id = f"RCP-{uuid.uuid4().hex[:12].upper()}"
+            db_receipt = PaymentReceipt(
+                id=receipt_id,
+                payment_mandate_id=request.mandate_id,
+                confirmation_id=receipt.get("payment_id", "UNKNOWN"),
+                amount=receipt["amount"]["value"],
+                currency=receipt["amount"]["currency"],
+                status="success",
+                receipt_data=json.dumps(receipt)
+            )
+
+            session.add(db_receipt)
+            await session.commit()
+
+            logger.info(f"OTP verified, payment successful for mandate {request.mandate_id}")
+            return ConfirmCheckoutResponse(
+                status="success",
+                receipt=receipt,
+                message="Payment completed successfully!"
+            )
+        else:
+            # Failed
+            db_mandate.status = "failed"
+            await session.commit()
+
+            logger.warning(f"OTP verification failed for mandate {request.mandate_id}")
+            return ConfirmCheckoutResponse(
+                status="failed",
+                message="Invalid OTP code"
+            )
+
+    except Exception as e:
+        logger.error(f"OTP verification error for mandate {request.mandate_id}: {e}")
+        return ConfirmCheckoutResponse(
+            status="failed",
+            message=f"OTP verification failed: {str(e)}"
+        )
 
 
 # ============================================================================
