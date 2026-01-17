@@ -5,12 +5,14 @@ import ReactMarkdown from 'react-markdown'
 import RegisterPage from './RegisterPage'
 import CheckoutPopup from './CheckoutPopup'
 import ProductGrid from './ProductGrid'
+import { ChatProductGrid } from './ChatProductCard'
 
 interface Message {
   id: string
   content: string
   role: 'user' | 'assistant'
   timestamp: Date
+  products?: Product[]
 }
 
 interface Product {
@@ -105,6 +107,29 @@ function App() {
         content: response.data.response,
         role: 'assistant',
         timestamp: new Date()
+      }
+
+      // Include product data if present in the response
+      if (response.data.products && Array.isArray(response.data.products)) {
+        assistantMessage.products = response.data.products.map((p: any) => ({
+          id: p.id,
+          sku: p.sku || p.id,
+          name: p.name,
+          description: p.description || '',
+          price: p.price,
+          image_url: p.image_url
+        }))
+
+        // Update cart items set with product IDs
+        const currentCart = new Set(cartItems)
+        assistantMessage.products.forEach(p => {
+          // Check if product is mentioned in cart context
+          if (response.data.response.toLowerCase().includes('in cart') ||
+              response.data.response.toLowerCase().includes('added')) {
+            currentCart.add(p.id)
+          }
+        })
+        setCartItems(currentCart)
       }
 
       setMessages(prev => [...prev, assistantMessage])
@@ -308,6 +333,18 @@ function App() {
                     <p className="whitespace-pre-wrap">{message.content}</p>
                   )}
                 </div>
+
+                {/* Product Cards in Chat */}
+                {message.products && message.products.length > 0 && (
+                  <div className="mt-4 w-full">
+                    <ChatProductGrid
+                      products={message.products}
+                      cartItems={cartItems}
+                      onAddToCart={handleAddToCartFromGrid}
+                    />
+                  </div>
+                )}
+
                 <span className="text-xs text-gray-400 mt-1 px-2">
                   {message.timestamp.toLocaleTimeString([], {
                     hour: '2-digit',

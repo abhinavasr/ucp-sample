@@ -104,6 +104,31 @@
   transform: translateY(-4px);
 }
 
+/* Chat Product Cards - Compact version for inline display */
+.chat-product-card {
+  @apply bg-white rounded-lg shadow-sm hover:shadow-md transition-all duration-200 flex flex-col overflow-hidden border border-gray-200;
+  width: 200px;
+}
+
+.chat-product-card:hover {
+  transform: translateY(-2px);
+}
+
+.chat-product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+}
+
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .line-clamp-2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;

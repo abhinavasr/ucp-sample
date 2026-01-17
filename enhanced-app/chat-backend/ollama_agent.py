@@ -306,11 +306,18 @@ Always be clear when items are successfully added to the cart.
             # Get response from LLM
             response = await self.llm.ainvoke(messages)
 
-            return {
+            # Include product data if this was a search query
+            response_data = {
                 "output": response.content,
                 "session_id": session_id,
                 "status": "success"
             }
+
+            # If we searched for products, include them in the response
+            if should_search and products:
+                response_data["products"] = products
+
+            return response_data
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
