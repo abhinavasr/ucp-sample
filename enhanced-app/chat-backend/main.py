@@ -642,7 +642,7 @@ async def prepare_checkout(
     session: AsyncSession = Depends(get_db)
 ):
     """
-    Prepare checkout - create unsigned payment mandate.
+    Prepare checkout - create UCP checkout session and payment mandate.
     Returns cart info and default card for user to review before signing.
     """
     # Get cart from session
@@ -663,7 +663,25 @@ async def prepare_checkout(
     if not card:
         raise HTTPException(status_code=404, detail="No payment card found. Please register first.")
 
-    # Create payment mandate (unsigned)
+    # Transform cart items for UCP checkout session
+    cart_items = [
+        {
+            "id": item["product_id"],
+            "sku": item.get("sku", item["product_id"]),
+            "name": item["name"],
+            "quantity": item["quantity"],
+            "price": item["price"]
+        }
+        for item in cart_info["cart"]
+    ]
+
+    # Create UCP checkout session
+    checkout_session = await ap2_client.create_checkout_session(
+        cart_items=cart_items,
+        buyer_email=request.user_email
+    )
+
+    # Create payment mandate (unsigned) for AP2
     mandate = ap2_client.create_payment_mandate(
         cart_data=cart_info,
         payment_card=card.to_dict(masked=True),
@@ -681,16 +699,17 @@ async def prepare_checkout(
         total_amount=cart_info["total"],
         currency="USD",
         mandate_data=json.dumps(mandate),
+        checkout_session_id=checkout_session["id"],  # Store UCP session ID
         status="pending"
     )
 
     session.add(db_mandate)
     await session.commit()
 
-    logger.info(f"Prepared checkout for {request.user_email}: mandate {mandate_id}")
+    logger.info(f"Prepared checkout for {request.user_email}: UCP session {checkout_session['id']}, mandate {mandate_id}")
 
     # Transform cart items to match frontend format
-    cart_items = [
+    frontend_cart_items = [
         {
             "id": item["product_id"],
             "sku": item.get("sku", item["product_id"]),
@@ -706,7 +725,7 @@ async def prepare_checkout(
         mandate_id=mandate_id,
         mandate_data=mandate,
         cart_total=cart_info["total"],
-        cart_items=cart_items,
+        cart_items=frontend_cart_items,
         default_card=card.to_dict(masked=True)
     )
 
@@ -746,17 +765,27 @@ async def confirm_checkout(
     db_mandate.mandate_data = json.dumps(mandate_data)
     await session.commit()
 
-    # Send to merchant's AP2 payment processor
+    # UCP Flow: Update checkout session with mandate and complete
     try:
-        receipt = await ap2_client.send_payment_mandate(mandate_data)
+        # Step 1: Update UCP checkout session with AP2 mandate
+        await ap2_client.update_checkout_with_mandate(
+            session_id=db_mandate.checkout_session_id,
+            mandate=mandate_data,
+            user_signature=request.user_signature
+        )
+
+        # Step 2: Complete UCP checkout
+        completion_result = await ap2_client.complete_checkout(
+            session_id=db_mandate.checkout_session_id
+        )
 
         # Check if OTP challenge
-        otp_challenge = ap2_client.extract_otp_challenge(receipt)
+        otp_challenge = ap2_client.extract_otp_challenge(completion_result)
         if otp_challenge:
             db_mandate.status = "otp_required"
             await session.commit()
 
-            logger.info(f"OTP challenge for mandate {request.mandate_id}")
+            logger.info(f"OTP challenge for UCP checkout {db_mandate.checkout_session_id}")
             return ConfirmCheckoutResponse(
                 status="otp_required",
                 otp_challenge=otp_challenge,
@@ -764,6 +793,7 @@ async def confirm_checkout(
             )
 
         # Payment successful
+        receipt = completion_result.get("receipt", {})
         db_mandate.status = "completed"
         db_mandate.completed_at = datetime.utcnow()
 
@@ -782,7 +812,7 @@ async def confirm_checkout(
         session.add(db_receipt)
         await session.commit()
 
-        logger.info(f"Payment successful for mandate {request.mandate_id}")
+        logger.info(f"Payment successful via UCP for checkout {db_mandate.checkout_session_id}")
         return ConfirmCheckoutResponse(
             status="success",
             receipt=receipt,
@@ -793,7 +823,7 @@ async def confirm_checkout(
         db_mandate.status = "failed"
         await session.commit()
 
-        logger.error(f"Payment failed for mandate {request.mandate_id}: {e}")
+        logger.error(f"Payment failed for UCP checkout {db_mandate.checkout_session_id}: {e}")
         return ConfirmCheckoutResponse(
             status="failed",
             message=f"Payment failed: {str(e)}"
@@ -824,13 +854,17 @@ async def verify_otp_and_complete(
     # Get mandate data
     mandate_data = json.loads(db_mandate.mandate_data)
 
-    # Send OTP to merchant
+    # Complete UCP checkout with OTP
     try:
-        receipt = await ap2_client.verify_otp_and_process(mandate_data, request.otp_code)
+        completion_result = await ap2_client.complete_checkout(
+            session_id=db_mandate.checkout_session_id,
+            otp_code=request.otp_code
+        )
 
         # Check status
-        payment_status = receipt.get("payment_status", {})
-        if "merchant_confirmation_id" in payment_status:
+        if completion_result.get("status") == "success":
+            receipt = completion_result.get("receipt", {})
+
             # Success
             db_mandate.status = "completed"
             db_mandate.completed_at = datetime.utcnow()
@@ -850,7 +884,7 @@ async def verify_otp_and_complete(
             session.add(db_receipt)
             await session.commit()
 
-            logger.info(f"OTP verified, payment successful for mandate {request.mandate_id}")
+            logger.info(f"OTP verified via UCP, payment successful for checkout {db_mandate.checkout_session_id}")
             return ConfirmCheckoutResponse(
                 status="success",
                 receipt=receipt,
@@ -861,14 +895,14 @@ async def verify_otp_and_complete(
             db_mandate.status = "failed"
             await session.commit()
 
-            logger.warning(f"OTP verification failed for mandate {request.mandate_id}")
+            logger.warning(f"OTP verification failed for UCP checkout {db_mandate.checkout_session_id}")
             return ConfirmCheckoutResponse(
                 status="failed",
                 message="Invalid OTP code"
             )
 
     except Exception as e:
-        logger.error(f"OTP verification error for mandate {request.mandate_id}: {e}")
+        logger.error(f"OTP verification error for UCP checkout {db_mandate.checkout_session_id}: {e}")
         return ConfirmCheckoutResponse(
             status="failed",
             message=f"OTP verification failed: {str(e)}"

@@ -88,6 +88,7 @@ class PaymentMandate(Base):
     payment_card_id = Column(String, ForeignKey("payment_cards.id"), nullable=False)
     total_amount = Column(Float, nullable=False)
     currency = Column(String, default="USD")
+    checkout_session_id = Column(String)  # UCP checkout session ID
     mandate_data = Column(Text)  # JSON: Full AP2 PaymentMandate structure
     user_signature = Column(Text)  # WebAuthn signature
     status = Column(String, default="pending")  # "pending", "signed", "processing", "completed", "failed"
