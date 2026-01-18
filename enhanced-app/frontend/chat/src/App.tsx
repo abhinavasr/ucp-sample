@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
-import { Send, ShoppingCart, Sparkles, Bot, User, UserPlus, Grid3x3 } from 'lucide-react'
+import { Send, ShoppingCart, Sparkles, Bot, User, UserPlus, Grid3x3, LogOut } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import RegisterPage from './RegisterPage'
 import CheckoutPopup from './CheckoutPopup'
@@ -184,6 +184,28 @@ function App() {
     setCartItems(new Set())
   }
 
+  const handleLogout = () => {
+    if (!confirm('Are you sure you want to logout?')) {
+      return
+    }
+
+    // Clear user data
+    localStorage.removeItem('userEmail')
+    setUserEmail('')
+    setIsRegistered(false)
+    setCartItems(new Set())
+
+    // Reset messages with welcome message
+    setMessages([
+      {
+        id: '1',
+        content: "👋 Hello! I'm your AI Shopping Assistant powered by Ollama. I can help you find products, manage your cart, and complete your purchase. To use secure checkout with AP2 payment, please register first!",
+        role: 'assistant',
+        timestamp: new Date()
+      }
+    ])
+  }
+
   const fetchProducts = async (query?: string) => {
     try {
       const params = query ? `?query=${encodeURIComponent(query)}` : ''
@@ -275,13 +297,21 @@ function App() {
               <Grid3x3 className="w-5 h-5" />
               <span>Browse Products</span>
             </button>
-            {!isRegistered && (
+            {!isRegistered ? (
               <button
                 onClick={() => setShowRegister(true)}
                 className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
               >
                 <UserPlus className="w-5 h-5" />
                 <span>Register</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleLogout}
+                className="flex items-center space-x-2 text-red-600 hover:text-red-700 transition-colors font-medium"
+              >
+                <LogOut className="w-5 h-5" />
+                <span>Logout</span>
               </button>
             )}
             <a
