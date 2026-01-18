@@ -29,14 +29,16 @@ The application is split into two independent backends that communicate via UCP:
 │   • Shopping Assistant       │  │ • SQLite Database            │
 │   • WebAuthn Passkeys        │  │ • Product Catalog            │
 │   • Encrypted Card Storage   │  │ • CRUD API                   │
+│   • Logout Feature           │  │ • Request Logging            │
 └──────────────┬───────────────┘  └──────────▲───────────────────┘
                │                              │
                │    UCP REST Protocol         │
                │    /.well-known/ucp          │
+               │    /ucp/v1/checkout-sessions │
                │    /ucp/products/search      │
                │                              │
-               │    AP2 Payment Protocol      │
-               │    /ap2/payment/process      │
+               │    AP2 via UCP Checkout      │
+               │    (No direct AP2 endpoints) │
                └──────────────────────────────┘
 ```
 
@@ -92,10 +94,10 @@ GET http://localhost:8451/.well-known/ucp
     "services": {
       "dev.ucp.shopping": {
         "version": "2026-01-11",
-        "spec": "https://ucp.dev/specs/shopping",
+        "spec": "https://ucp.dev/specification/overview",
         "rest": {
-          "schema": "https://ucp.dev/services/shopping/openapi.json",
-          "endpoint": "http://localhost:8451"
+          "schema": "https://ucp.dev/services/shopping/rest.openapi.json",
+          "endpoint": "http://localhost:8453/ucp/v1"
         }
       }
     },
@@ -103,15 +105,35 @@ GET http://localhost:8451/.well-known/ucp
       {
         "name": "dev.ucp.shopping.product_search",
         "version": "2026-01-11",
-        "spec": "https://ucp.dev/specs/shopping/product_search",
+        "spec": "https://ucp.dev/specification/shopping/product_search",
         "schema": "https://ucp.dev/schemas/shopping/product_search.json"
+      },
+      {
+        "name": "dev.ucp.shopping.checkout",
+        "version": "2026-01-11",
+        "spec": "https://ucp.dev/specification/checkout",
+        "schema": "https://ucp.dev/schemas/shopping/checkout.json",
+        "extensions": {
+          "ap2_mandate": {
+            "version": "2026-01-11",
+            "spec": "https://ucp.dev/specification/extensions/ap2_mandate",
+            "schema": "https://ucp.dev/schemas/extensions/ap2_mandate.json"
+          }
+        }
       }
     ]
+  },
+  "payment": {
+    "ap2_payment": {
+      "supported_formats": ["sd-jwt"],
+      "mandates_supported": true,
+      "otp_verification_supported": true
+    }
   },
   "merchant": {
     "id": "merchant-001",
     "name": "Enhanced Business Store",
-    "url": "http://localhost:8451"
+    "url": "http://localhost:8453"
   }
 }
 ```
@@ -155,6 +177,54 @@ GET http://localhost:8451/ucp/products/search?q=cookies&limit=5
 }
 ```
 
+### UCP Checkout Sessions (AP2 Integration)
+
+The merchant backend exposes UCP checkout endpoints that wrap AP2 payment processing per the UCP specification:
+
+```bash
+# Create checkout session
+POST http://localhost:8453/ucp/v1/checkout-sessions
+{
+  "line_items": [
+    {"id": "PROD-001", "sku": "PROD-001", "name": "Cookies", "quantity": 2, "price": 4.99}
+  ],
+  "buyer_email": "user@example.com",
+  "currency": "USD"
+}
+
+# Response
+{
+  "id": "cs_a1b2c3d4e5f67890",
+  "status": "incomplete",
+  "line_items": [...],
+  "totals": {"subtotal": 9.98, "tax": 0.0, "total": 9.98, "currency": "USD"}
+}
+
+# Update session with AP2 payment mandate
+PUT http://localhost:8453/ucp/v1/checkout-sessions/{id}
+{
+  "payment_mandate": {...},  // AP2 payment mandate
+  "user_signature": "..."     // WebAuthn signature
+}
+
+# Complete checkout (processes payment via AP2)
+POST http://localhost:8453/ucp/v1/checkout-sessions/{id}/complete
+# Optional: ?otp_code=123456 for OTP verification
+
+# Response
+{
+  "status": "success",
+  "checkout": {...},
+  "receipt": {...}  // AP2 payment receipt
+}
+```
+
+**Key Features:**
+- ✅ **UCP Compliant**: Follows https://ucp.dev/specification/checkout
+- ✅ **AP2 Integration**: Payment mandates processed via AP2 agent internally
+- ✅ **Session Management**: Stateful checkout with status transitions
+- ✅ **OTP Support**: Handles step-up authentication via query parameter
+
 ## 💳 AP2 Payment Protocol Integration
 
 This application implements the **Agentic Payment Protocol (AP2)** for secure, passkey-authenticated payments.
@@ -171,27 +241,29 @@ User Registration Flow:
 4. Chat Frontend → Chat Backend: /api/auth/register (email, passkey credential)
 5. Chat Backend: Store user + encrypted default card (5123 1212 2232 5678)
 
-Payment Flow:
+Payment Flow (via UCP Checkout):
 1. User → Chat Frontend: "I want to checkout"
 2. Chat Frontend → Chat Backend: POST /api/payment/prepare-checkout
-3. Chat Backend: Create unsigned payment mandate
-4. Chat Frontend → User: Show checkout popup (cart, masked card, total)
-5. User → Chat Frontend: Click "Confirm Payment with Passkey"
-6. Chat Frontend → Browser: Request WebAuthn assertion
-7. Browser: User authenticates with biometrics
-8. Chat Frontend → Chat Backend: POST /api/payment/confirm-checkout (signed mandate)
-9. Chat Backend → Merchant Backend: POST /ap2/payment/process (AP2 mandate)
-10. Merchant Backend (AP2 Agent): Validate signature, check fraud risk
-11a. If low risk → Payment approved → Receipt returned
-11b. If high risk → OTP challenge → Receipt with OTP_REQUIRED
-12. (If OTP) User → Chat Frontend: Enter 6-digit OTP
-13. Chat Frontend → Chat Backend: POST /api/payment/verify-otp
-14. Chat Backend → Merchant Backend: POST /ap2/payment/verify-otp
-15. Merchant Backend: Verify OTP → Process payment → Receipt
-16. Chat Frontend: Show success with payment ID
+3. Chat Backend → Merchant Backend: POST /ucp/v1/checkout-sessions (create UCP session)
+4. Chat Backend: Create unsigned AP2 payment mandate, store session ID
+5. Chat Frontend → User: Show checkout popup (cart, masked card, total)
+6. User → Chat Frontend: Click "Confirm Payment with Passkey"
+7. Chat Frontend → Browser: Request WebAuthn assertion
+8. Browser: User authenticates with biometrics
+9. Chat Frontend → Chat Backend: POST /api/payment/confirm-checkout (signed mandate)
+10. Chat Backend → Merchant Backend: PUT /ucp/v1/checkout-sessions/{id} (attach mandate)
+11. Chat Backend → Merchant Backend: POST /ucp/v1/checkout-sessions/{id}/complete
+12. Merchant Backend (AP2 Agent): Validate signature, check fraud risk
+13a. If low risk → Payment approved → Receipt returned with status "success"
+13b. If high risk → OTP challenge → Receipt with status "otp_required"
+14. (If OTP) User → Chat Frontend: Enter 6-digit OTP
+15. Chat Frontend → Chat Backend: POST /api/payment/verify-otp
+16. Chat Backend → Merchant Backend: POST /ucp/v1/checkout-sessions/{id}/complete?otp_code=123456
+17. Merchant Backend: Verify OTP → Process payment → Receipt
+18. Chat Frontend: Show success confirmation in chat history with payment ID
 ```
 
-### AP2 Endpoints
+### API Endpoints
 
 #### Chat Backend (Consumer Agent)
 
@@ -205,18 +277,26 @@ POST /api/auth/verify-passkey      # Verify passkey signature
 GET /api/payment/cards             # List user's payment cards (masked)
 GET /api/payment/cards/default     # Get default payment card
 
-# AP2 Payment Mandates
-POST /api/payment/prepare-checkout # Create unsigned payment mandate
-POST /api/payment/confirm-checkout # Sign mandate and send to merchant
-POST /api/payment/verify-otp       # Verify OTP and complete payment
+# Payment Flow (uses UCP checkout internally)
+POST /api/payment/prepare-checkout # Create UCP session + AP2 mandate
+POST /api/payment/confirm-checkout # Sign mandate, complete UCP checkout
+POST /api/payment/verify-otp       # Complete checkout with OTP
 ```
 
-#### Merchant Backend (Merchant Agent)
+#### Merchant Backend (UCP Server + AP2 Merchant Agent)
 
 ```bash
-# AP2 Payment Processing
-POST /ap2/payment/process          # Process signed payment mandate
-POST /ap2/payment/verify-otp       # Verify OTP and complete payment
+# UCP Checkout Endpoints (wrapping AP2)
+POST   /ucp/v1/checkout-sessions          # Create checkout session
+GET    /ucp/v1/checkout-sessions/{id}     # Get checkout session
+PUT    /ucp/v1/checkout-sessions/{id}     # Update with payment mandate
+POST   /ucp/v1/checkout-sessions/{id}/complete  # Process payment via AP2
+
+# Dashboard API
+GET    /api/dashboard/ucp-logs     # UCP request logs
+GET    /api/dashboard/ap2-logs     # AP2 payment logs
+GET    /api/dashboard/stats        # Dashboard statistics
+DELETE /api/dashboard/clear-logs   # Clear all logs
 ```
 
 ### AP2 Payment Mandate Structure
@@ -238,7 +318,8 @@ POST /ap2/payment/verify-otp       # Verify OTP and complete payment
       "request_id": "REQ-A1B2C3D4E5F6",
       "method_name": "CARD",
       "details": {
-        "token": "TOK-1234567890abcdef",
+        "token": "5342223122345000",
+        "cryptogram": "A3F4E2C8B1D7F9E6A2C5B8D1E4F7A9C3",
         "card_last_four": "5678",
         "card_network": "mastercard"
       },
@@ -431,29 +512,51 @@ The chat backend will:
 ## 🎯 Key Features
 
 ### UCP Communication
-- ✅ **Discovery**: Chat backend discovers merchant capabilities
-- ✅ **Standard Protocol**: Uses UCP-compliant REST endpoints
+- ✅ **Discovery**: Chat backend discovers merchant capabilities via `/.well-known/ucp`
+- ✅ **Standard Protocol**: UCP-compliant REST endpoints following https://ucp.dev/specification/
+- ✅ **Checkout Sessions**: Full UCP checkout flow with AP2 payment integration
 - ✅ **Price Format**: Handles prices in cents (UCP standard)
 - ✅ **Independent Systems**: Both backends can run separately
-- ✅ **Extensible**: Easy to add more UCP capabilities
+- ✅ **Extensible**: Easy to add more UCP capabilities and extensions
 
 ### Chat Backend Features
-- 🤖 AI-powered conversation with Ollama
-- 🔍 Automatic product search via UCP
-- 🛒 Shopping cart management
-- 💳 Checkout session handling
+- 🤖 **AI-powered conversation** with Ollama LLM
+- 🔍 **Automatic product search** via UCP product discovery
+- 🛒 **Shopping cart management** with session persistence
+- 💳 **UCP Checkout integration** with AP2 payment mandates
+- 🔐 **WebAuthn passkey authentication** (FIDO2)
+- 🔑 **Encrypted card storage** with Fernet encryption
+- 🚪 **Logout functionality** with state cleanup
+- 💬 **Payment confirmation** shown in chat history
 
 ### Merchant Backend Features
-- 📦 Full CRUD product management
-- 🗄️ SQLite database persistence
-- 🔌 UCP-compliant REST API
-- 📊 Product search and filtering
+- 📦 **Full CRUD product management** via REST API
+- 🗄️ **SQLite database persistence** for products and logs
+- 🔌 **UCP-compliant REST API** with discovery endpoint
+- 🛒 **UCP checkout sessions** wrapping AP2 payment processing
+- 📊 **Product search and filtering** with UCP format
+- 📈 **Merchant dashboard** at app.abhinava.xyz/dashboard
+- 📝 **Request/Response logging** for UCP and AP2 calls
+- 🔍 **Real-time monitoring** of payment flows
+- 🗑️ **Clear logs feature** for dashboard cleanup
 
 ### Frontend Features
-- ⚛️ React + TypeScript + Tailwind CSS
-- 🎨 Modern, responsive UI
-- 🔄 Real-time updates
-- 📱 Mobile-friendly design
+- ⚛️ **React + TypeScript + Tailwind CSS** modern stack
+- 🎨 **Modern, responsive UI** with Lucide icons
+- 🔄 **Real-time updates** via Vite HMR
+- 📱 **Mobile-friendly design** with responsive layouts
+- 🎉 **Payment success confirmations** in chat interface
+- 🚪 **Logout button** with confirmation dialog
+- 📦 **Product grid display** with add-to-cart functionality
+
+### Security & Payment Features
+- 🔐 **WebAuthn/FIDO2 passkeys** - No passwords, biometric auth
+- 🔒 **Encrypted card storage** - AES-256 Fernet encryption
+- 🎫 **Token-based payments** - 16-digit numeric tokens + cryptograms
+- 🔢 **OTP challenges** - Risk-based step-up authentication
+- 🔗 **UCP + AP2 integration** - Payments via UCP checkout sessions
+- 📋 **Full audit trail** - Request/response logging in dashboard
+- 🛡️ **Zero trust architecture** - Credentials and products separated
 
 ## 🔧 Configuration
 
