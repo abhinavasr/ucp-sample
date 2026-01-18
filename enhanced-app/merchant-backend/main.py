@@ -22,7 +22,10 @@ from merchant_payment_agent import MerchantPaymentAgent
 from ap2_types import PaymentMandate as AP2PaymentMandate, PaymentReceipt as AP2PaymentReceipt, OTPVerification
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import StreamingResponse, JSONResponse
 import time
+from io import BytesIO
+# No longer using contextvars - using request.state instead
 
 # Load environment variables
 load_dotenv()
@@ -242,6 +245,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Calculate duration
         duration_ms = (time.time() - start_time) * 1000
 
+        # Try to get response body from request.state (set by endpoints)
+        response_body = getattr(request.state, "response_data", None)
+
         # Log UCP and AP2 requests
         path = request.url.path
         if path.startswith("/.well-known/ucp") or path.startswith("/ucp/"):
@@ -250,6 +256,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 request=request,
                 response=response,
                 request_body=request_body,
+                response_body=response_body,
                 duration_ms=duration_ms
             )
         elif path.startswith("/ap2/"):
@@ -258,12 +265,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 request=request,
                 response=response,
                 request_body=request_body,
+                response_body=response_body,
                 duration_ms=duration_ms
             )
 
         return response
 
-    async def _log_ucp_request(self, request: Request, response: Response, request_body, duration_ms):
+    async def _log_ucp_request(self, request: Request, response: Response, request_body, response_body, duration_ms):
         """Log UCP API request."""
         try:
             async for session in db_manager.get_session():
@@ -274,7 +282,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     query_params=json.dumps(dict(request.query_params)) if request.query_params else None,
                     request_body=json.dumps(request_body) if request_body else None,
                     response_status=response.status_code,
-                    response_body=None,  # Will be set by endpoint if needed
+                    response_body=json.dumps(response_body) if response_body else None,
                     client_ip=request.client.host if request.client else None,
                     user_agent=request.headers.get("user-agent"),
                     duration_ms=duration_ms
@@ -284,10 +292,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             print(f"Error logging UCP request: {e}")
 
-    async def _log_ap2_request(self, request: Request, response: Response, request_body, duration_ms):
+    async def _log_ap2_request(self, request: Request, response: Response, request_body, response_body, duration_ms):
         """Log AP2 payment request."""
         try:
-            # Extract AP2-specific fields
+            # Extract AP2-specific fields from request
             mandate_id = None
             request_signature = None
             message_type = "unknown"
@@ -301,6 +309,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     message_type = "otp_verification"
                     mandate_id = request_body.get("mandate_id")
 
+            # Extract AP2-specific fields from response
+            response_signature = None
+            payment_status = None
+            if isinstance(response_body, dict):
+                # Extract merchant signature if present
+                response_signature = response_body.get("merchant_signature")
+                # Extract payment status
+                if response_body.get("payment_status"):
+                    payment_status = response_body["payment_status"].get("status")
+
             async for session in db_manager.get_session():
                 log_entry = AP2RequestLog(
                     id=str(uuid.uuid4()),
@@ -311,9 +329,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     request_body=json.dumps(request_body) if request_body else "{}",
                     request_signature=request_signature,
                     response_status=response.status_code,
-                    response_body="{}",  # Will be set by endpoint if needed
-                    response_signature=None,  # Will be set by endpoint if needed
-                    payment_status=None,  # Will be set by endpoint
+                    response_body=json.dumps(response_body) if response_body else "{}",
+                    response_signature=response_signature,
+                    payment_status=payment_status,
                     client_ip=request.client.host if request.client else None,
                     user_agent=request.headers.get("user-agent"),
                     duration_ms=duration_ms
@@ -375,14 +393,14 @@ async def root():
 # ============================================================================
 
 @app.get("/.well-known/ucp")
-async def get_ucp_profile():
+async def get_ucp_profile(request: Request):
     """
     UCP Discovery Endpoint
     Returns merchant capabilities and service endpoints
     """
     merchant_url = os.getenv("MERCHANT_URL", "http://localhost:8451")
 
-    return {
+    response_data = {
         "ucp": {
             "version": "2026-01-11",
             "services": {
@@ -411,6 +429,11 @@ async def get_ucp_profile():
         }
     }
 
+    # Store response in request.state for logging middleware
+    request.state.response_data = response_data
+
+    return response_data
+
 
 # ============================================================================
 # UCP Product Search Endpoint
@@ -418,6 +441,7 @@ async def get_ucp_profile():
 
 @app.get("/ucp/products/search", response_model=UCPSearchResponse)
 async def ucp_search_products(
+    request: Request,
     q: Optional[str] = None,
     category: Optional[str] = None,
     limit: int = 10,
@@ -456,10 +480,15 @@ async def ucp_search_products(
         for p in products
     ]
 
-    return UCPSearchResponse(
+    response_obj = UCPSearchResponse(
         items=items,
         total=len(items)
     )
+
+    # Store response in request.state for logging middleware
+    request.state.response_data = response_obj.dict()
+
+    return response_obj
 
 
 # ============================================================================
@@ -688,6 +717,7 @@ def get_payment_agent() -> MerchantPaymentAgent:
 
 @app.post("/ap2/payment/process", response_model=AP2PaymentReceipt)
 async def process_payment_mandate(
+    request: Request,
     mandate: AP2PaymentMandate,
     payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
 ):
@@ -703,7 +733,7 @@ async def process_payment_mandate(
     if payment_agent.should_raise_otp_challenge(mandate):
         challenge = payment_agent.create_otp_challenge(mandate)
         # Return as error status with OTP info
-        return AP2PaymentReceipt(
+        receipt = AP2PaymentReceipt(
             payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
             timestamp=datetime.utcnow().isoformat(),
             payment_id="PENDING-OTP",
@@ -713,14 +743,20 @@ async def process_payment_mandate(
             ),
             payment_method_details={"otp_challenge": challenge.dict()}
         )
+        # Store response in request.state for logging middleware
+        request.state.response_data = receipt.dict()
+        return receipt
 
     # Process payment
     receipt = payment_agent.process_payment(mandate)
+    # Store response in request.state for logging middleware
+    request.state.response_data = receipt.dict()
     return receipt
 
 
 @app.post("/ap2/payment/verify-otp", response_model=AP2PaymentReceipt)
 async def verify_otp_and_process(
+    request: Request,
     mandate: AP2PaymentMandate,
     otp_verification: OTPVerification,
     payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
@@ -734,7 +770,7 @@ async def verify_otp_and_process(
         otp_verification.payment_mandate_id,
         otp_verification.otp_code
     ):
-        return AP2PaymentReceipt(
+        receipt = AP2PaymentReceipt(
             payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
             timestamp=datetime.utcnow().isoformat(),
             payment_id="ERR-INVALID-OTP",
@@ -743,9 +779,14 @@ async def verify_otp_and_process(
                 failure_message="Invalid OTP code"
             )
         )
+        # Store response in request.state for logging middleware
+        request.state.response_data = receipt.dict()
+        return receipt
 
     # OTP verified, process payment
     receipt = payment_agent.process_payment(mandate)
+    # Store response in request.state for logging middleware
+    request.state.response_data = receipt.dict()
     return receipt
 
 
@@ -828,6 +869,28 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_db)):
         "successful_payments": payment_success_count,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.delete("/api/dashboard/clear-logs")
+async def clear_all_logs(session: AsyncSession = Depends(get_db)):
+    """Clear all UCP and AP2 logs from the dashboard."""
+    try:
+        # Delete all UCP logs
+        await session.execute(UCPRequestLog.__table__.delete())
+
+        # Delete all AP2 logs
+        await session.execute(AP2RequestLog.__table__.delete())
+
+        await session.commit()
+
+        return {
+            "status": "success",
+            "message": "All logs cleared successfully",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to clear logs: {str(e)}")
 
 
 # ============================================================================

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Activity, Code, CreditCard, RefreshCw, Filter, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-react'
+import { Activity, Code, CreditCard, RefreshCw, Filter, ChevronDown, ChevronUp, ArrowLeft, Trash2 } from 'lucide-react'
 
 interface UCPLog {
   id: string
@@ -99,6 +99,21 @@ function Dashboard({ onBackToProducts }: DashboardProps) {
     return 'text-red-600 bg-red-50'
   }
 
+  const clearAllLogs = async () => {
+    if (!confirm('Are you sure you want to clear all logs? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      await axios.delete('/api/dashboard/clear-logs')
+      // Refresh data after clearing
+      await fetchData()
+    } catch (error) {
+      console.error('Error clearing logs:', error)
+      alert('Failed to clear logs. Please try again.')
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -129,17 +144,26 @@ function Dashboard({ onBackToProducts }: DashboardProps) {
               <h1 className="text-3xl font-bold text-gray-900">API Dashboard</h1>
               <p className="text-gray-600 mt-1">Monitor UCP and AP2 protocol requests</p>
             </div>
-            <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
-                autoRefresh
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin' : ''}`} />
-              <span>{autoRefresh ? 'Auto-refreshing' : 'Auto-refresh OFF'}</span>
-            </button>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={clearAllLogs}
+                className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Clear All Logs</span>
+              </button>
+              <button
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                  autoRefresh
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin' : ''}`} />
+                <span>{autoRefresh ? 'Auto-refreshing' : 'Auto-refresh OFF'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Stats Cards */}
