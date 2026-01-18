@@ -18,6 +18,7 @@ interface CheckoutPopupProps {
   onClose: () => void
   sessionId: string
   userEmail: string
+  onPaymentSuccess?: (paymentId: string, total: number, items: CartItem[]) => void
 }
 
 interface CartItem {
@@ -42,7 +43,7 @@ interface PrepareCheckoutResponse {
   default_card: PaymentCard
 }
 
-function CheckoutPopup({ isOpen, onClose, sessionId, userEmail }: CheckoutPopupProps) {
+function CheckoutPopup({ isOpen, onClose, sessionId, userEmail, onPaymentSuccess }: CheckoutPopupProps) {
   const [loading, setLoading] = useState(false)
   const [preparing, setPreparing] = useState(true)
   const [error, setError] = useState('')
@@ -146,6 +147,11 @@ function CheckoutPopup({ isOpen, onClose, sessionId, userEmail }: CheckoutPopupP
                          'CONFIRMED'
         setPaymentId(paymentId)
         setSuccess(true)
+
+        // Notify parent component of successful payment
+        if (onPaymentSuccess && checkoutData) {
+          onPaymentSuccess(paymentId, checkoutData.cart_total, checkoutData.cart_items)
+        }
       } else if (status === 'otp_required') {
         setOtpRequired(true)
         setOtpMessage(otp_challenge?.message || 'Additional verification required')
@@ -193,6 +199,11 @@ function CheckoutPopup({ isOpen, onClose, sessionId, userEmail }: CheckoutPopupP
         setPaymentId(paymentId)
         setSuccess(true)
         setOtpRequired(false)
+
+        // Notify parent component of successful payment
+        if (onPaymentSuccess && checkoutData) {
+          onPaymentSuccess(paymentId, checkoutData.cart_total, checkoutData.cart_items)
+        }
       } else {
         throw new Error('OTP verification failed')
       }
