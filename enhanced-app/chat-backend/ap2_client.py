@@ -104,95 +104,129 @@ class AP2Client:
         logger.info(f"Created payment mandate: {mandate_id}")
         return mandate
 
-    async def send_payment_mandate(self, mandate: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Send signed payment mandate to merchant's AP2 payment processor.
-
-        Args:
-            mandate: Signed payment mandate
-
-        Returns:
-            Payment receipt from merchant
-        """
-        mandate_id = mandate["payment_mandate_contents"]["payment_mandate_id"]
-
-        try:
-            response = await self.client.post(
-                f"{self.merchant_url}/ap2/payment/process",
-                json=mandate,
-                headers={"Content-Type": "application/json"}
-            )
-
-            response.raise_for_status()
-            receipt = response.json()
-
-            logger.info(f"Payment processed for mandate {mandate_id}: {receipt.get('payment_status')}")
-            return receipt
-
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to process payment mandate {mandate_id}: {e}")
-            raise
-
-    async def verify_otp_and_process(
+    async def create_checkout_session(
         self,
-        mandate: Dict[str, Any],
-        otp_code: str
+        cart_items: list,
+        buyer_email: str
     ) -> Dict[str, Any]:
         """
-        Verify OTP and process payment.
+        Create UCP checkout session.
 
         Args:
-            mandate: Payment mandate
-            otp_code: OTP code from user
+            cart_items: List of cart items
+            buyer_email: Buyer's email
 
         Returns:
-            Payment receipt
+            Checkout session data
         """
-        mandate_id = mandate["payment_mandate_contents"]["payment_mandate_id"]
-
         try:
             response = await self.client.post(
-                f"{self.merchant_url}/ap2/payment/verify-otp",
+                f"{self.merchant_url}/ucp/v1/checkout-sessions",
                 json={
-                    "mandate": mandate,
-                    "otp_verification": {
-                        "payment_mandate_id": mandate_id,
-                        "otp_code": otp_code
-                    }
+                    "line_items": cart_items,
+                    "buyer_email": buyer_email,
+                    "currency": "USD"
                 },
                 headers={"Content-Type": "application/json"}
             )
 
             response.raise_for_status()
-            receipt = response.json()
+            session_data = response.json()
 
-            logger.info(f"OTP verified and payment processed for mandate {mandate_id}")
-            return receipt
+            logger.info(f"Created checkout session: {session_data.get('id')}")
+            return session_data
 
         except httpx.HTTPError as e:
-            logger.error(f"Failed to verify OTP for mandate {mandate_id}: {e}")
+            logger.error(f"Failed to create checkout session: {e}")
             raise
 
-    def extract_otp_challenge(self, receipt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def update_checkout_with_mandate(
+        self,
+        session_id: str,
+        mandate: Dict[str, Any],
+        user_signature: str
+    ) -> Dict[str, Any]:
         """
-        Extract OTP challenge from receipt if present.
+        Update UCP checkout session with AP2 payment mandate.
 
         Args:
-            receipt: Payment receipt
+            session_id: Checkout session ID
+            mandate: Payment mandate
+            user_signature: User signature
+
+        Returns:
+            Updated checkout session
+        """
+        try:
+            response = await self.client.put(
+                f"{self.merchant_url}/ucp/v1/checkout-sessions/{session_id}",
+                json={
+                    "payment_mandate": mandate,
+                    "user_signature": user_signature
+                },
+                headers={"Content-Type": "application/json"}
+            )
+
+            response.raise_for_status()
+            session_data = response.json()
+
+            logger.info(f"Updated checkout session {session_id} with payment mandate")
+            return session_data
+
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to update checkout session {session_id}: {e}")
+            raise
+
+    async def complete_checkout(
+        self,
+        session_id: str,
+        otp_code: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete UCP checkout session.
+
+        Args:
+            session_id: Checkout session ID
+            otp_code: Optional OTP code for verification
+
+        Returns:
+            Completion response with receipt
+        """
+        try:
+            url = f"{self.merchant_url}/ucp/v1/checkout-sessions/{session_id}/complete"
+            if otp_code:
+                url = f"{url}?otp_code={otp_code}"
+
+            response = await self.client.post(
+                url,
+                headers={"Content-Type": "application/json"}
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            logger.info(f"Completed checkout session {session_id}: {result.get('status')}")
+            return result
+
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to complete checkout session {session_id}: {e}")
+            raise
+
+    def extract_otp_challenge(self, completion_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Extract OTP challenge from UCP checkout completion result.
+
+        Args:
+            completion_result: UCP checkout completion response
 
         Returns:
             OTP challenge info or None
         """
-        payment_status = receipt.get("payment_status", {})
-
-        # Check if it's an error status with OTP required
-        if "error_message" in payment_status:
-            error_msg = payment_status["error_message"]
-            if error_msg.startswith("OTP_REQUIRED:"):
-                # Extract OTP challenge from payment_method_details
-                otp_challenge = receipt.get("payment_method_details", {}).get("otp_challenge")
-                if otp_challenge:
-                    logger.info(f"OTP challenge detected for mandate {receipt.get('payment_mandate_id')}")
-                    return otp_challenge
+        # Check if status is otp_required
+        if completion_result.get("status") == "otp_required":
+            otp_challenge = completion_result.get("otp_challenge")
+            if otp_challenge:
+                logger.info(f"OTP challenge detected for checkout session")
+                return otp_challenge
 
         return None

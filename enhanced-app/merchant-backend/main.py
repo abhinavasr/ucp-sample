@@ -406,10 +406,10 @@ async def get_ucp_profile(request: Request):
             "services": {
                 "dev.ucp.shopping": {
                     "version": "2026-01-11",
-                    "spec": "https://ucp.dev/specs/shopping",
+                    "spec": "https://ucp.dev/specification/overview",
                     "rest": {
-                        "schema": "https://ucp.dev/services/shopping/openapi.json",
-                        "endpoint": merchant_url
+                        "schema": "https://ucp.dev/services/shopping/rest.openapi.json",
+                        "endpoint": f"{merchant_url}/ucp/v1"
                     }
                 }
             },
@@ -417,10 +417,30 @@ async def get_ucp_profile(request: Request):
                 {
                     "name": "dev.ucp.shopping.product_search",
                     "version": "2026-01-11",
-                    "spec": "https://ucp.dev/specs/shopping/product_search",
+                    "spec": "https://ucp.dev/specification/shopping/product_search",
                     "schema": "https://ucp.dev/schemas/shopping/product_search.json"
+                },
+                {
+                    "name": "dev.ucp.shopping.checkout",
+                    "version": "2026-01-11",
+                    "spec": "https://ucp.dev/specification/checkout",
+                    "schema": "https://ucp.dev/schemas/shopping/checkout.json",
+                    "extensions": {
+                        "ap2_mandate": {
+                            "version": "2026-01-11",
+                            "spec": "https://ucp.dev/specification/extensions/ap2_mandate",
+                            "schema": "https://ucp.dev/schemas/extensions/ap2_mandate.json"
+                        }
+                    }
                 }
             ]
+        },
+        "payment": {
+            "ap2_payment": {
+                "supported_formats": ["sd-jwt"],
+                "mandates_supported": True,
+                "otp_verification_supported": True
+            }
         },
         "merchant": {
             "id": os.getenv("MERCHANT_ID", "merchant-001"),
@@ -707,87 +727,201 @@ async def delete_product(
 
 
 # ============================================================================
-# AP2 Payment Processing Endpoints (Merchant Agent)
+# UCP Checkout Endpoints (wrapping AP2 Payment)
 # ============================================================================
 
+class LineItem(BaseModel):
+    """UCP line item."""
+    id: str
+    sku: str
+    name: str
+    quantity: int
+    price: float
+
+class CheckoutSessionCreate(BaseModel):
+    """Create checkout session request."""
+    line_items: List[LineItem]
+    buyer_email: str
+    currency: str = "USD"
+
+class CheckoutSessionUpdate(BaseModel):
+    """Update checkout session request."""
+    payment_mandate: Optional[Dict[str, Any]] = None
+    user_signature: Optional[str] = None
+
+class CheckoutSessionResponse(BaseModel):
+    """Checkout session response."""
+    id: str
+    status: str  # incomplete, ready_for_complete, complete, cancelled
+    line_items: List[LineItem]
+    totals: Dict[str, Any]
+    payment: Optional[Dict[str, Any]] = None
+    ap2: Optional[Dict[str, Any]] = None
+
+# In-memory checkout sessions (in production, use database)
+checkout_sessions: Dict[str, Dict[str, Any]] = {}
+
+@app.post("/ucp/v1/checkout-sessions", response_model=CheckoutSessionResponse)
+async def create_checkout_session(
+    request: Request,
+    checkout: CheckoutSessionCreate,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    UCP: Create checkout session.
+    Returns checkout session with status 'incomplete'.
+    """
+    session_id = f"cs_{uuid.uuid4().hex[:16]}"
+
+    # Calculate totals
+    subtotal = sum(item.price * item.quantity for item in checkout.line_items)
+
+    checkout_data = {
+        "id": session_id,
+        "status": "incomplete",
+        "line_items": [item.dict() for item in checkout.line_items],
+        "buyer_email": checkout.buyer_email,
+        "totals": {
+            "subtotal": subtotal,
+            "tax": 0.0,
+            "total": subtotal,
+            "currency": checkout.currency
+        },
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+    checkout_sessions[session_id] = checkout_data
+
+    response_data = CheckoutSessionResponse(**checkout_data)
+    request.state.response_data = response_data.dict()
+
+    return response_data
+
+@app.get("/ucp/v1/checkout-sessions/{session_id}", response_model=CheckoutSessionResponse)
+async def get_checkout_session(
+    request: Request,
+    session_id: str
+):
+    """UCP: Get checkout session by ID."""
+    if session_id not in checkout_sessions:
+        raise HTTPException(status_code=404, detail="Checkout session not found")
+
+    checkout_data = checkout_sessions[session_id]
+    response_data = CheckoutSessionResponse(**checkout_data)
+    request.state.response_data = response_data.dict()
+
+    return response_data
+
+@app.put("/ucp/v1/checkout-sessions/{session_id}", response_model=CheckoutSessionResponse)
+async def update_checkout_session(
+    request: Request,
+    session_id: str,
+    update: CheckoutSessionUpdate
+):
+    """
+    UCP: Update checkout session with payment mandate.
+    Transitions status to 'ready_for_complete' when payment mandate is provided.
+    """
+    if session_id not in checkout_sessions:
+        raise HTTPException(status_code=404, detail="Checkout session not found")
+
+    checkout_data = checkout_sessions[session_id]
+
+    # Update with payment mandate if provided
+    if update.payment_mandate:
+        checkout_data["payment_mandate"] = update.payment_mandate
+        checkout_data["user_signature"] = update.user_signature
+        checkout_data["status"] = "ready_for_complete"
+        checkout_data["ap2"] = {
+            "mandate_id": update.payment_mandate.get("payment_mandate_contents", {}).get("payment_mandate_id"),
+            "user_authorization": update.user_signature
+        }
+
+    checkout_sessions[session_id] = checkout_data
+
+    response_data = CheckoutSessionResponse(**checkout_data)
+    request.state.response_data = response_data.dict()
+
+    return response_data
+
+@app.post("/ucp/v1/checkout-sessions/{session_id}/complete")
+async def complete_checkout_session(
+    request: Request,
+    session_id: str,
+    otp_code: Optional[str] = None
+):
+    """
+    UCP: Complete checkout session.
+    Processes AP2 payment mandate and returns final receipt.
+    """
+    if session_id not in checkout_sessions:
+        raise HTTPException(status_code=404, detail="Checkout session not found")
+
+    checkout_data = checkout_sessions[session_id]
+
+    if checkout_data["status"] != "ready_for_complete":
+        raise HTTPException(status_code=400, detail="Checkout session not ready for completion")
+
+    # Get payment mandate from checkout session
+    payment_mandate = checkout_data.get("payment_mandate")
+    if not payment_mandate:
+        raise HTTPException(status_code=400, detail="Payment mandate missing")
+
+    # Process through AP2 payment agent
+    payment_agent = app.state.payment_agent
+    mandate_obj = AP2PaymentMandate(**payment_mandate)
+
+    # If OTP code provided, verify it
+    if otp_code:
+        otp_verification = OTPVerification(
+            payment_mandate_id=mandate_obj.payment_mandate_contents.payment_mandate_id,
+            otp_code=otp_code
+        )
+
+        if not payment_agent.verify_otp(
+            otp_verification.payment_mandate_id,
+            otp_verification.otp_code
+        ):
+            raise HTTPException(status_code=400, detail="Invalid OTP code")
+
+        receipt = payment_agent.process_payment(mandate_obj)
+    else:
+        # Check if OTP challenge needed
+        if payment_agent.should_raise_otp_challenge(mandate_obj):
+            challenge = payment_agent.create_otp_challenge(mandate_obj)
+            checkout_data["status"] = "requires_escalation"
+            checkout_data["otp_challenge"] = challenge.dict()
+
+            response_data = {
+                "status": "otp_required",
+                "checkout": checkout_data,
+                "otp_challenge": challenge.dict()
+            }
+            request.state.response_data = response_data
+            return response_data
+
+        # Process payment
+        receipt = payment_agent.process_payment(mandate_obj)
+
+    # Update checkout session with completion
+    checkout_data["status"] = "complete"
+    checkout_data["receipt"] = receipt.dict()
+    checkout_data["completed_at"] = datetime.utcnow().isoformat()
+
+    response_data = {
+        "status": "success",
+        "checkout": checkout_data,
+        "receipt": receipt.dict()
+    }
+    request.state.response_data = response_data
+
+    return response_data
+
+
+# Helper function for payment agent
 def get_payment_agent() -> MerchantPaymentAgent:
     """Get payment agent instance."""
     return app.state.payment_agent
-
-
-@app.post("/ap2/payment/process", response_model=AP2PaymentReceipt)
-async def process_payment_mandate(
-    request: Request,
-    mandate: AP2PaymentMandate,
-    payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
-):
-    """
-    Process AP2 payment mandate from consumer (chat backend).
-
-    Flow:
-    1. Validate mandate signature
-    2. Check if OTP challenge needed
-    3. Process payment or return OTP challenge
-    """
-    # Check if OTP challenge should be raised
-    if payment_agent.should_raise_otp_challenge(mandate):
-        challenge = payment_agent.create_otp_challenge(mandate)
-        # Return as error status with OTP info
-        receipt = AP2PaymentReceipt(
-            payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
-            timestamp=datetime.utcnow().isoformat(),
-            payment_id="PENDING-OTP",
-            amount=mandate.payment_mandate_contents.payment_details_total.amount,
-            payment_status=PaymentReceiptError(
-                error_message=f"OTP_REQUIRED:{challenge.message}"
-            ),
-            payment_method_details={"otp_challenge": challenge.dict()}
-        )
-        # Store response in request.state for logging middleware
-        request.state.response_data = receipt.dict()
-        return receipt
-
-    # Process payment
-    receipt = payment_agent.process_payment(mandate)
-    # Store response in request.state for logging middleware
-    request.state.response_data = receipt.dict()
-    return receipt
-
-
-@app.post("/ap2/payment/verify-otp", response_model=AP2PaymentReceipt)
-async def verify_otp_and_process(
-    request: Request,
-    mandate: AP2PaymentMandate,
-    otp_verification: OTPVerification,
-    payment_agent: MerchantPaymentAgent = Depends(get_payment_agent)
-):
-    """
-    Verify OTP and process payment.
-    Called after user provides OTP code.
-    """
-    # Verify OTP
-    if not payment_agent.verify_otp(
-        otp_verification.payment_mandate_id,
-        otp_verification.otp_code
-    ):
-        receipt = AP2PaymentReceipt(
-            payment_mandate_id=mandate.payment_mandate_contents.payment_mandate_id,
-            timestamp=datetime.utcnow().isoformat(),
-            payment_id="ERR-INVALID-OTP",
-            amount=mandate.payment_mandate_contents.payment_details_total.amount,
-            payment_status=PaymentReceiptFailure(
-                failure_message="Invalid OTP code"
-            )
-        )
-        # Store response in request.state for logging middleware
-        request.state.response_data = receipt.dict()
-        return receipt
-
-    # OTP verified, process payment
-    receipt = payment_agent.process_payment(mandate)
-    # Store response in request.state for logging middleware
-    request.state.response_data = receipt.dict()
-    return receipt
 
 
 # ============================================================================
