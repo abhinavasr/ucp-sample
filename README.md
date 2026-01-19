@@ -51,8 +51,8 @@ A production-ready AI-powered shopping assistant with UCP product discovery and 
         *   Port 8451 → Merchant Portal (maps to https://app.abhinava.xyz)
         *   Port 8452 → Chat Backend API (credentials provider + AP2 consumer agent)
         *   Port 8453 → Merchant Backend API (UCP server + AP2 merchant agent)
-    *   **Quick Start**: `cd enhanced-app && ./start-split.sh`
-    *   **Stop Services**: `cd enhanced-app && ./stop-split.sh`
+    *   **Quick Start**: `./start-split.sh` (from repository root)
+    *   **Stop Services**: `./stop-split.sh` (from repository root)
     *   **Status**: ✅ **FULLY IMPLEMENTED** - UCP product discovery, AI chat, cart management, user registration with passkey, payment card storage, AP2 payment flow with OTP challenge, checkout UI
 
 ## Sample Implementations
