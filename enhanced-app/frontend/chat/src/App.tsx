@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
-import { Send, ShoppingCart, Sparkles, Bot, User, UserPlus, Grid3x3, LogOut } from 'lucide-react'
+import { Send, ShoppingCart, Sparkles, Bot, User, UserPlus, Grid3x3, LogOut, Menu, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import RegisterPage from './RegisterPage'
 import CheckoutPopup from './CheckoutPopup'
@@ -36,6 +36,7 @@ function App() {
   const [showProductGrid, setShowProductGrid] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
   const [cartItems, setCartItems] = useState<Set<string>>(new Set())
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -122,7 +123,7 @@ function App() {
 
         // Update cart items set with product IDs
         const currentCart = new Set(cartItems)
-        assistantMessage.products.forEach(p => {
+        assistantMessage.products?.forEach(p => {
           // Check if product is mentioned in cart context
           if (response.data.response.toLowerCase().includes('in cart') ||
               response.data.response.toLowerCase().includes('added')) {
@@ -277,53 +278,114 @@ function App() {
     <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
       {/* Header */}
       <header className="bg-white border-b border-gray-200 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <Sparkles className="w-6 h-6 text-white" />
+        <div className="max-w-6xl mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-purple-600 rounded-lg flex items-center justify-center">
+                <Sparkles className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-lg sm:text-xl font-bold text-gray-800">AI Shopping Assistant</h1>
+                <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">
+                  {isRegistered ? `Logged in as ${userEmail}` : 'Powered by Ollama'}
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-800">AI Shopping Assistant</h1>
-              <p className="text-sm text-gray-500">
-                {isRegistered ? `Logged in as ${userEmail}` : 'Powered by Ollama'}
-              </p>
+
+            {/* Desktop Navigation */}
+            <div className="hidden md:flex items-center space-x-4">
+              <button
+                onClick={() => fetchProducts()}
+                className="flex items-center space-x-2 text-gray-700 hover:text-primary-600 transition-colors font-medium"
+              >
+                <Grid3x3 className="w-5 h-5" />
+                <span>Browse Products</span>
+              </button>
+              {!isRegistered ? (
+                <button
+                  onClick={() => setShowRegister(true)}
+                  className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
+                >
+                  <UserPlus className="w-5 h-5" />
+                  <span>Register</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center space-x-2 text-red-600 hover:text-red-700 transition-colors font-medium"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span>Logout</span>
+                </button>
+              )}
+              <a
+                href="https://app.abhinava.xyz"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-700 transition-colors"
+              >
+                <ShoppingCart className="w-5 h-5" />
+                <span className="font-medium">Merchant Portal</span>
+              </a>
             </div>
-          </div>
-          <div className="flex items-center space-x-4">
+
+            {/* Mobile Menu Button */}
             <button
-              onClick={() => fetchProducts()}
-              className="flex items-center space-x-2 text-gray-700 hover:text-primary-600 transition-colors font-medium"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="md:hidden p-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <Grid3x3 className="w-5 h-5" />
-              <span>Browse Products</span>
+              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
-            {!isRegistered ? (
-              <button
-                onClick={() => setShowRegister(true)}
-                className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
-              >
-                <UserPlus className="w-5 h-5" />
-                <span>Register</span>
-              </button>
-            ) : (
-              <button
-                onClick={handleLogout}
-                className="flex items-center space-x-2 text-red-600 hover:text-red-700 transition-colors font-medium"
-              >
-                <LogOut className="w-5 h-5" />
-                <span>Logout</span>
-              </button>
-            )}
-            <a
-              href="https://app.abhinava.xyz"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center space-x-2 text-gray-600 hover:text-gray-700 transition-colors"
-            >
-              <ShoppingCart className="w-5 h-5" />
-              <span className="font-medium">Merchant Portal</span>
-            </a>
           </div>
+
+          {/* Mobile Navigation */}
+          {mobileMenuOpen && (
+            <div className="md:hidden mt-4 py-4 border-t border-gray-200 space-y-2">
+              <button
+                onClick={() => {
+                  fetchProducts()
+                  setMobileMenuOpen(false)
+                }}
+                className="w-full flex items-center space-x-2 px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors font-medium"
+              >
+                <Grid3x3 className="w-5 h-5" />
+                <span>Browse Products</span>
+              </button>
+              {!isRegistered ? (
+                <button
+                  onClick={() => {
+                    setShowRegister(true)
+                    setMobileMenuOpen(false)
+                  }}
+                  className="w-full flex items-center space-x-2 px-4 py-3 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors font-medium"
+                >
+                  <UserPlus className="w-5 h-5" />
+                  <span>Register</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    handleLogout()
+                    setMobileMenuOpen(false)
+                  }}
+                  className="w-full flex items-center space-x-2 px-4 py-3 text-red-600 hover:bg-red-50 rounded-lg transition-colors font-medium"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span>Logout</span>
+                </button>
+              )}
+              <a
+                href="https://app.abhinava.xyz"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full flex items-center space-x-2 px-4 py-3 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors font-medium"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                <ShoppingCart className="w-5 h-5" />
+                <span>Merchant Portal</span>
+              </a>
+            </div>
+          )}
         </div>
       </header>
 

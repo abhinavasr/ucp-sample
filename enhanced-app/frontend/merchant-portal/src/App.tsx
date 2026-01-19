@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Plus, Edit2, Trash2, Save, X, Store, MessageSquare, DollarSign, BarChart3, Tag, Package, Settings as SettingsIcon } from 'lucide-react'
+import { Plus, Edit2, Trash2, Save, X, Store, MessageSquare, DollarSign, BarChart3, Tag, Package, Settings as SettingsIcon, Menu } from 'lucide-react'
 import Dashboard from './Dashboard'
 import Promocodes from './Promocodes'
 import Settings from './Settings'
@@ -39,6 +39,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [formData, setFormData] = useState<ProductFormData>({
     sku: '',
     name: '',
@@ -140,22 +141,21 @@ function App() {
     setShowAddForm(false)
   }
 
-  // If dashboard page is active, render it
-  if (currentPage === 'dashboard') {
-    return <Dashboard onBackToProducts={() => setCurrentPage('products')} />
+  // Render the appropriate page based on currentPage state
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'dashboard':
+        return <Dashboard onBackToProducts={() => setCurrentPage('products')} />
+      case 'promocodes':
+        return <Promocodes onBackToProducts={() => setCurrentPage('products')} />
+      case 'settings':
+        return <Settings onBackToProducts={() => setCurrentPage('products')} />
+      case 'products':
+        return renderProductsPage()
+    }
   }
 
-  // If promocodes page is active, render it
-  if (currentPage === 'promocodes') {
-    return <Promocodes onBackToProducts={() => setCurrentPage('products')} />
-  }
-
-  // If settings page is active, render it
-  if (currentPage === 'settings') {
-    return <Settings onBackToProducts={() => setCurrentPage('products')} />
-  }
-
-  return (
+  const renderProductsPage = () => (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200">
@@ -166,11 +166,13 @@ function App() {
                 <Store className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-800">Merchant Portal</h1>
-                <p className="text-sm text-gray-500">Manage your products and pricing</p>
+                <h1 className="text-lg sm:text-2xl font-bold text-gray-800">Merchant Portal</h1>
+                <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">Manage your products and pricing</p>
               </div>
             </div>
-            <div className="flex items-center space-x-4">
+
+            {/* Desktop Navigation */}
+            <div className="hidden lg:flex items-center space-x-4">
               <button
                 onClick={() => setCurrentPage('products')}
                 className={`flex items-center space-x-2 transition-colors font-medium ${
@@ -191,7 +193,9 @@ function App() {
               </button>
               <button
                 onClick={() => setCurrentPage('dashboard')}
-                className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
+                className={`flex items-center space-x-2 transition-colors font-medium ${
+                  currentPage === 'dashboard' ? 'text-primary-700' : 'text-primary-600 hover:text-primary-700'
+                }`}
               >
                 <BarChart3 className="w-5 h-5" />
                 <span>Dashboard</span>
@@ -215,7 +219,87 @@ function App() {
                 <span>Chat Interface</span>
               </a>
             </div>
+
+            {/* Mobile Menu Button */}
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="lg:hidden p-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+            </button>
           </div>
+
+          {/* Mobile Navigation */}
+          {mobileMenuOpen && (
+            <div className="lg:hidden mt-4 py-4 border-t border-gray-200 space-y-2">
+              <button
+                onClick={() => {
+                  setCurrentPage('products')
+                  setMobileMenuOpen(false)
+                }}
+                className={`w-full flex items-center space-x-2 px-4 py-3 rounded-lg transition-colors font-medium ${
+                  currentPage === 'products'
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-primary-600 hover:bg-gray-50'
+                }`}
+              >
+                <Package className="w-5 h-5" />
+                <span>Products</span>
+              </button>
+              <button
+                onClick={() => {
+                  setCurrentPage('promocodes')
+                  setMobileMenuOpen(false)
+                }}
+                className={`w-full flex items-center space-x-2 px-4 py-3 rounded-lg transition-colors font-medium ${
+                  currentPage === 'promocodes'
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-primary-600 hover:bg-gray-50'
+                }`}
+              >
+                <Tag className="w-5 h-5" />
+                <span>Promocodes</span>
+              </button>
+              <button
+                onClick={() => {
+                  setCurrentPage('dashboard')
+                  setMobileMenuOpen(false)
+                }}
+                className={`w-full flex items-center space-x-2 px-4 py-3 rounded-lg transition-colors font-medium ${
+                  currentPage === 'dashboard'
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-primary-600 hover:bg-gray-50'
+                }`}
+              >
+                <BarChart3 className="w-5 h-5" />
+                <span>Dashboard</span>
+              </button>
+              <button
+                onClick={() => {
+                  setCurrentPage('settings')
+                  setMobileMenuOpen(false)
+                }}
+                className={`w-full flex items-center space-x-2 px-4 py-3 rounded-lg transition-colors font-medium ${
+                  currentPage === 'settings'
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-primary-600 hover:bg-gray-50'
+                }`}
+              >
+                <SettingsIcon className="w-5 h-5" />
+                <span>Settings</span>
+              </button>
+              <a
+                href="https://chat.abhinava.xyz"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full flex items-center space-x-2 px-4 py-3 text-primary-600 hover:bg-gray-50 rounded-lg transition-colors font-medium"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                <MessageSquare className="w-5 h-5" />
+                <span>Chat Interface</span>
+              </a>
+            </div>
+          )}
         </div>
       </header>
 
@@ -439,43 +523,44 @@ function App() {
               <p className="text-gray-600">No products found. Add your first product!</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
+            <div className="overflow-x-auto -mx-4 sm:mx-0">
+              <table className="w-full min-w-full">
                 <thead>
                   <tr className="border-b-2 border-gray-200">
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">SKU</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Name</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Category</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Brand</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Price</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Status</th>
-                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Actions</th>
+                    <th className="text-left py-3 px-2 sm:px-4 font-semibold text-gray-700 text-sm">Name</th>
+                    <th className="hidden sm:table-cell text-left py-3 px-4 font-semibold text-gray-700 text-sm">SKU</th>
+                    <th className="hidden md:table-cell text-left py-3 px-4 font-semibold text-gray-700 text-sm">Category</th>
+                    <th className="hidden lg:table-cell text-left py-3 px-4 font-semibold text-gray-700 text-sm">Brand</th>
+                    <th className="text-left py-3 px-2 sm:px-4 font-semibold text-gray-700 text-sm">Price</th>
+                    <th className="hidden sm:table-cell text-left py-3 px-4 font-semibold text-gray-700 text-sm">Status</th>
+                    <th className="text-right py-3 px-2 sm:px-4 font-semibold text-gray-700 text-sm">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {products.map((product) => (
                     <tr key={product.id} className="table-row">
-                      <td className="py-3 px-4">
-                        <span className="font-mono text-sm text-gray-600">{product.sku}</span>
-                      </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-2 sm:px-4">
                         <div>
-                          <p className="font-medium text-gray-800">{product.name}</p>
+                          <p className="font-medium text-gray-800 text-sm">{product.name}</p>
                           {product.description && (
-                            <p className="text-sm text-gray-500 truncate max-w-xs">
+                            <p className="text-xs text-gray-500 truncate max-w-[150px] sm:max-w-xs">
                               {product.description}
                             </p>
                           )}
+                          <p className="sm:hidden text-xs text-gray-400 font-mono mt-1">{product.sku}</p>
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-gray-600">{product.category || '-'}</td>
-                      <td className="py-3 px-4 text-gray-600">{product.brand || '-'}</td>
-                      <td className="py-3 px-4">
-                        <span className="font-semibold text-gray-800">
+                      <td className="hidden sm:table-cell py-3 px-4">
+                        <span className="font-mono text-sm text-gray-600">{product.sku}</span>
+                      </td>
+                      <td className="hidden md:table-cell py-3 px-4 text-gray-600 text-sm">{product.category || '-'}</td>
+                      <td className="hidden lg:table-cell py-3 px-4 text-gray-600 text-sm">{product.brand || '-'}</td>
+                      <td className="py-3 px-2 sm:px-4">
+                        <span className="font-semibold text-gray-800 text-sm">
                           {product.currency} {product.price.toFixed(2)}
                         </span>
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="hidden sm:table-cell py-3 px-4">
                         <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
                           product.is_active
                             ? 'bg-green-100 text-green-800'
@@ -484,18 +569,18 @@ function App() {
                           {product.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex justify-end space-x-2">
+                      <td className="py-3 px-2 sm:px-4 text-right">
+                        <div className="flex justify-end space-x-1 sm:space-x-2">
                           <button
                             onClick={() => handleEdit(product)}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            className="p-1.5 sm:p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                             title="Edit"
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleDelete(product.id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            className="p-1.5 sm:p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="Delete"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -512,6 +597,8 @@ function App() {
       </main>
     </div>
   )
+
+  return renderPage()
 }
 
 export default App

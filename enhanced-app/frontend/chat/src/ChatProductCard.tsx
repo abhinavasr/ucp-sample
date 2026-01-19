@@ -7,7 +7,7 @@ interface Product {
   name: string
   description: string
   price: number
-  image_url: string
+  image_url?: string
 }
 
 interface ChatProductCardProps {
@@ -27,7 +27,7 @@ export function ChatProductCard({ product, isInCart, onAddToCart }: ChatProductC
   }
 
   // Parse image URL if it's a JSON array string
-  let imageUrl = product.image_url
+  let imageUrl = product.image_url || ''
   if (typeof imageUrl === 'string' && imageUrl.startsWith('[')) {
     try {
       const urls = JSON.parse(imageUrl)

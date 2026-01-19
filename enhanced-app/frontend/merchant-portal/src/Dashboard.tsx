@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Activity, Code, CreditCard, RefreshCw, Filter, ChevronDown, ChevronUp, ArrowLeft, Trash2 } from 'lucide-react'
+import { Activity, Code, CreditCard, RefreshCw, ChevronDown, ChevronUp, ArrowLeft, Trash2 } from 'lucide-react'
 
 interface UCPLog {
   id: string
