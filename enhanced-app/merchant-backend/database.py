@@ -271,6 +271,101 @@ class AP2RequestLog(Base):
         }
 
 
+class Promocode(Base):
+    """Promocode/Voucher model for merchant discounts."""
+    __tablename__ = "promocodes"
+
+    id = Column(String, primary_key=True)
+    code = Column(String, unique=True, nullable=False, index=True)  # Promocode (e.g., "SAVE10")
+    description = Column(Text)  # Description of the promocode
+    discount_type = Column(String, nullable=False)  # "percentage" or "fixed_amount"
+    discount_value = Column(Float, nullable=False)  # 10 for 10% or 5.00 for $5
+    currency = Column(String, default="SGD")  # For fixed_amount discounts
+    min_purchase_amount = Column(Float)  # Minimum purchase amount required
+    max_discount_amount = Column(Float)  # Maximum discount cap for percentage discounts
+    usage_limit = Column(Integer)  # Maximum number of times this code can be used (null = unlimited)
+    usage_count = Column(Integer, default=0)  # Number of times this code has been used
+    valid_from = Column(DateTime)  # Start date (null = valid from creation)
+    valid_until = Column(DateTime)  # Expiration date (null = no expiration)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def is_valid(self, purchase_amount: float = None) -> tuple[bool, str]:
+        """
+        Check if promocode is valid.
+
+        Returns:
+            (is_valid, error_message)
+        """
+        now = datetime.utcnow()
+
+        # Check if active
+        if not self.is_active:
+            return False, "Promocode is not active"
+
+        # Check usage limit
+        if self.usage_limit is not None and self.usage_count >= self.usage_limit:
+            return False, "Promocode has reached its usage limit"
+
+        # Check valid_from date
+        if self.valid_from and now < self.valid_from:
+            return False, "Promocode is not yet valid"
+
+        # Check valid_until date
+        if self.valid_until and now > self.valid_until:
+            return False, "Promocode has expired"
+
+        # Check minimum purchase amount
+        if purchase_amount is not None and self.min_purchase_amount is not None:
+            if purchase_amount < self.min_purchase_amount:
+                return False, f"Minimum purchase amount of {self.currency} {self.min_purchase_amount} required"
+
+        return True, ""
+
+    def calculate_discount(self, purchase_amount: float) -> float:
+        """
+        Calculate discount amount for given purchase amount.
+
+        Args:
+            purchase_amount: Total purchase amount before discount
+
+        Returns:
+            Discount amount
+        """
+        if self.discount_type == "percentage":
+            discount = purchase_amount * (self.discount_value / 100.0)
+            # Apply max discount cap if specified
+            if self.max_discount_amount is not None:
+                discount = min(discount, self.max_discount_amount)
+            return round(discount, 2)
+        elif self.discount_type == "fixed_amount":
+            # Fixed amount discount cannot exceed purchase amount
+            return min(self.discount_value, purchase_amount)
+        else:
+            return 0.0
+
+    def to_dict(self):
+        """Convert to dictionary."""
+        return {
+            "id": self.id,
+            "code": self.code,
+            "description": self.description,
+            "discount_type": self.discount_type,
+            "discount_value": self.discount_value,
+            "currency": self.currency,
+            "min_purchase_amount": self.min_purchase_amount,
+            "max_discount_amount": self.max_discount_amount,
+            "usage_limit": self.usage_limit,
+            "usage_count": self.usage_count,
+            "valid_from": self.valid_from.isoformat() if self.valid_from else None,
+            "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
 class DatabaseManager:
     """Manages database connections and operations."""
 

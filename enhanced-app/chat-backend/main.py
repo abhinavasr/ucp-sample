@@ -642,6 +642,7 @@ class PrepareCheckoutRequest(BaseModel):
     """Request to prepare checkout with payment mandate."""
     session_id: str
     user_email: str
+    promocode: Optional[str] = None  # Optional promocode/coupon
 
 
 class PrepareCheckoutResponse(BaseModel):
@@ -651,6 +652,8 @@ class PrepareCheckoutResponse(BaseModel):
     cart_total: float
     cart_items: List[Dict[str, Any]]
     default_card: Dict[str, Any]
+    promocode: Optional[Dict[str, Any]] = None  # Applied promocode info
+    promocode_error: Optional[str] = None  # Promocode validation error
 
 
 class ConfirmCheckoutRequest(BaseModel):
@@ -719,12 +722,20 @@ async def prepare_checkout(
     # Create UCP checkout session
     checkout_session = await ap2_client.create_checkout_session(
         cart_items=cart_items,
-        buyer_email=request.user_email
+        buyer_email=request.user_email,
+        promocode=request.promocode if request.promocode else None
     )
 
-    # Create payment mandate (unsigned) for AP2
+    # Get final total from checkout session (includes any promocode discount)
+    final_total = checkout_session.get("totals", {}).get("total", cart_info["total"])
+
+    # Update cart_info with discounted total if promocode was applied
+    updated_cart_info = cart_info.copy()
+    updated_cart_info["total"] = final_total
+
+    # Create payment mandate (unsigned) for AP2 with updated total
     mandate = ap2_client.create_payment_mandate(
-        cart_data=cart_info,
+        cart_data=updated_cart_info,
         payment_card=card.to_dict(masked=True),
         user_email=request.user_email
     )
@@ -737,7 +748,7 @@ async def prepare_checkout(
         user_email=request.user_email,
         cart_id=request.session_id,
         payment_card_id=card.id,
-        total_amount=cart_info["total"],
+        total_amount=final_total,  # Use discounted total
         currency="SGD",
         mandate_data=json.dumps(mandate),
         checkout_session_id=checkout_session["id"],  # Store UCP session ID
@@ -762,12 +773,18 @@ async def prepare_checkout(
         for item in cart_info["cart"]
     ]
 
+    # Extract promocode info from checkout session
+    promocode_info = checkout_session.get("promocode")
+    promocode_error = checkout_session.get("promocode_error")
+
     return PrepareCheckoutResponse(
         mandate_id=mandate_id,
         mandate_data=mandate,
-        cart_total=cart_info["total"],
+        cart_total=final_total,
         cart_items=frontend_cart_items,
-        default_card=card.to_dict(masked=True)
+        default_card=card.to_dict(masked=True),
+        promocode=promocode_info,
+        promocode_error=promocode_error
     )
 
 

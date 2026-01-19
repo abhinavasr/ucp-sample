@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Plus, Edit2, Trash2, Save, X, Store, MessageSquare, DollarSign, BarChart3 } from 'lucide-react'
+import { Plus, Edit2, Trash2, Save, X, Store, MessageSquare, DollarSign, BarChart3, Tag, Package, Settings as SettingsIcon } from 'lucide-react'
 import Dashboard from './Dashboard'
+import Promocodes from './Promocodes'
+import Settings from './Settings'
 
 interface Product {
   id: string
@@ -32,7 +34,7 @@ interface ProductFormData {
 }
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<'products' | 'dashboard'>('products')
+  const [currentPage, setCurrentPage] = useState<'products' | 'promocodes' | 'dashboard' | 'settings'>('products')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -143,6 +145,16 @@ function App() {
     return <Dashboard onBackToProducts={() => setCurrentPage('products')} />
   }
 
+  // If promocodes page is active, render it
+  if (currentPage === 'promocodes') {
+    return <Promocodes onBackToProducts={() => setCurrentPage('products')} />
+  }
+
+  // If settings page is active, render it
+  if (currentPage === 'settings') {
+    return <Settings onBackToProducts={() => setCurrentPage('products')} />
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
@@ -160,11 +172,38 @@ function App() {
             </div>
             <div className="flex items-center space-x-4">
               <button
+                onClick={() => setCurrentPage('products')}
+                className={`flex items-center space-x-2 transition-colors font-medium ${
+                  currentPage === 'products' ? 'text-primary-700' : 'text-primary-600 hover:text-primary-700'
+                }`}
+              >
+                <Package className="w-5 h-5" />
+                <span>Products</span>
+              </button>
+              <button
+                onClick={() => setCurrentPage('promocodes')}
+                className={`flex items-center space-x-2 transition-colors font-medium ${
+                  currentPage === 'promocodes' ? 'text-primary-700' : 'text-primary-600 hover:text-primary-700'
+                }`}
+              >
+                <Tag className="w-5 h-5" />
+                <span>Promocodes</span>
+              </button>
+              <button
                 onClick={() => setCurrentPage('dashboard')}
                 className="flex items-center space-x-2 text-primary-600 hover:text-primary-700 transition-colors font-medium"
               >
                 <BarChart3 className="w-5 h-5" />
                 <span>Dashboard</span>
+              </button>
+              <button
+                onClick={() => setCurrentPage('settings')}
+                className={`flex items-center space-x-2 transition-colors font-medium ${
+                  currentPage === 'settings' ? 'text-primary-700' : 'text-primary-600 hover:text-primary-700'
+                }`}
+              >
+                <SettingsIcon className="w-5 h-5" />
+                <span>Settings</span>
               </button>
               <a
                 href="https://chat.abhinava.xyz"

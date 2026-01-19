@@ -41,6 +41,14 @@ interface PrepareCheckoutResponse {
   cart_total: number
   cart_items: CartItem[]
   default_card: PaymentCard
+  promocode?: {
+    code: string
+    description: string
+    discount_type: string
+    discount_value: number
+    discount_amount: number
+  }
+  promocode_error?: string
 }
 
 function CheckoutPopup({ isOpen, onClose, sessionId, userEmail, onPaymentSuccess }: CheckoutPopupProps) {
@@ -56,29 +64,55 @@ function CheckoutPopup({ isOpen, onClose, sessionId, userEmail, onPaymentSuccess
   const [mandateId, setMandateId] = useState('')
   const [paymentId, setPaymentId] = useState('')
 
+  const [promocode, setPromocode] = useState('')
+  const [applyingPromocode, setApplyingPromocode] = useState(false)
+  const [promocodeApplied, setPromocodeApplied] = useState(false)
+
   useEffect(() => {
     if (isOpen) {
       prepareCheckout()
     }
   }, [isOpen])
 
-  const prepareCheckout = async () => {
+  const prepareCheckout = async (promoCode?: string) => {
     setPreparing(true)
     setError('')
 
     try {
       const response = await axios.post('/api/payment/prepare-checkout', {
         session_id: sessionId,
-        user_email: userEmail
+        user_email: userEmail,
+        promocode: promoCode || undefined
       })
 
       setCheckoutData(response.data)
       setMandateId(response.data.mandate_id)
+
+      // Check if promocode was applied successfully
+      if (promoCode && response.data.promocode) {
+        setPromocodeApplied(true)
+      }
     } catch (err: any) {
       console.error('Prepare checkout error:', err)
       setError(err.response?.data?.detail || 'Failed to prepare checkout')
     } finally {
       setPreparing(false)
+    }
+  }
+
+  const applyPromocode = async () => {
+    if (!promocode.trim()) return
+
+    setApplyingPromocode(true)
+    setError('')
+
+    try {
+      await prepareCheckout(promocode.trim().toUpperCase())
+    } catch (err: any) {
+      console.error('Apply promocode error:', err)
+      setError(err.response?.data?.detail || 'Failed to apply promocode')
+    } finally {
+      setApplyingPromocode(false)
     }
   }
 
@@ -381,13 +415,91 @@ function CheckoutPopup({ isOpen, onClose, sessionId, userEmail, onPaymentSuccess
                     </div>
                   ))}
                 </div>
-                <div className="border-t border-gray-200 mt-4 pt-4 flex justify-between items-center">
-                  <p className="text-base font-bold text-gray-800">Total</p>
-                  <p className="text-xl font-bold text-primary-600">
-                    S${checkoutData?.cart_total.toFixed(2)}
-                  </p>
+                <div className="border-t border-gray-200 mt-4 pt-4 space-y-2">
+                  {checkoutData?.promocode && (
+                    <>
+                      <div className="flex justify-between items-center text-sm">
+                        <p className="text-gray-600">Subtotal</p>
+                        <p className="text-gray-800">
+                          S${(checkoutData.cart_total / (1 - (checkoutData.promocode.discount_amount / (checkoutData.cart_total + checkoutData.promocode.discount_amount)))).toFixed(2)}
+                        </p>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <p className="text-green-600 font-medium flex items-center">
+                          <span className="bg-green-100 text-green-800 px-2 py-0.5 rounded text-xs font-mono mr-2">
+                            {checkoutData.promocode.code}
+                          </span>
+                          Discount
+                        </p>
+                        <p className="text-green-600 font-medium">
+                          -S${checkoutData.promocode.discount_amount.toFixed(2)}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex justify-between items-center border-t border-gray-200 pt-2">
+                    <p className="text-base font-bold text-gray-800">Total</p>
+                    <p className="text-xl font-bold text-primary-600">
+                      S${checkoutData?.cart_total.toFixed(2)}
+                    </p>
+                  </div>
                 </div>
               </div>
+
+              {/* Promocode Section */}
+              {!promocodeApplied && !checkoutData?.promocode && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-700 mb-3">Promocode (Optional)</h3>
+                  <div className="flex space-x-2">
+                    <input
+                      type="text"
+                      value={promocode}
+                      onChange={(e) => setPromocode(e.target.value.toUpperCase())}
+                      placeholder="Enter code (e.g., SAVE10)"
+                      className="input-field flex-1"
+                      disabled={applyingPromocode}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter') {
+                          applyPromocode()
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={applyPromocode}
+                      disabled={!promocode.trim() || applyingPromocode}
+                      className="btn-secondary whitespace-nowrap"
+                    >
+                      {applyingPromocode ? 'Applying...' : 'Apply'}
+                    </button>
+                  </div>
+                  {checkoutData?.promocode_error && (
+                    <p className="text-xs text-red-600 mt-2">
+                      {checkoutData.promocode_error}
+                    </p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-2">
+                    Try: SAVE10, WELCOME5, or FLASH20
+                  </p>
+                </div>
+              )}
+
+              {checkoutData?.promocode && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-start space-x-2">
+                      <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-green-800">
+                          Promocode Applied!
+                        </p>
+                        <p className="text-xs text-green-700 mt-1">
+                          {checkoutData.promocode.description}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Payment Method */}
               <div>

@@ -5,6 +5,7 @@ Integrated within merchant backend, uses same Ollama instance as chat backend.
 
 import uuid
 import random
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 import logging
@@ -40,7 +41,13 @@ class MerchantPaymentAgent:
         self.model_name = model_name
         self.pending_otps: Dict[str, str] = {}  # mandate_id -> otp
 
-        logger.info(f"Merchant Payment Agent initialized (model: {model_name})")
+        # OTP configuration - can be enabled/disabled via environment variable
+        # Set ENABLE_OTP_CHALLENGE=true to enable OTP for high-risk transactions
+        # Default: false (disabled) since passkeys provide sufficient security
+        self.otp_enabled = os.getenv("ENABLE_OTP_CHALLENGE", "false").lower() == "true"
+        self.otp_amount_threshold = float(os.getenv("OTP_AMOUNT_THRESHOLD", "100.0"))
+
+        logger.info(f"Merchant Payment Agent initialized (model: {model_name}, OTP: {'enabled' if self.otp_enabled else 'disabled'})")
 
     def validate_mandate_signature(self, mandate: PaymentMandate) -> bool:
         """
@@ -64,26 +71,36 @@ class MerchantPaymentAgent:
     def should_raise_otp_challenge(self, mandate: PaymentMandate) -> bool:
         """
         Determine if OTP challenge should be raised.
-        In production: based on risk scoring, transaction amount, user history.
-        For demo: random 10% chance.
-        """
-        # Simple rules:
-        # 1. Amounts over $100: 30% chance
-        # 2. Amounts under $100: 10% chance
 
+        Configurable via environment variables:
+        - ENABLE_OTP_CHALLENGE=true/false (default: false)
+        - OTP_AMOUNT_THRESHOLD=<amount> (default: 100.0)
+
+        NOTE: OTP is disabled by default since we use passkeys (WebAuthn/FIDO2)
+        for authentication and payment signing. Passkeys already provide:
+        - Phishing-resistant authentication
+        - Multi-factor authentication (possession + biometric/PIN)
+        - Cryptographic signature per transaction
+
+        Enable OTP only if you need additional step-up authentication for:
+        - Regulatory compliance requirements
+        - High-value transactions (configurable threshold)
+        - Extra risk management layer
+        """
+        # Check if OTP is enabled
+        if not self.otp_enabled:
+            logger.info(f"OTP disabled for mandate {mandate.payment_mandate_contents.payment_mandate_id}")
+            return False
+
+        # OTP enabled - check amount threshold
         amount = mandate.payment_mandate_contents.payment_details_total.amount.value
 
-        if amount > 100:
-            challenge_probability = 0.3
-        else:
-            challenge_probability = 0.1
+        if amount > self.otp_amount_threshold:
+            logger.info(f"OTP challenge triggered for mandate {mandate.payment_mandate_contents.payment_mandate_id} (amount: ${amount} > threshold: ${self.otp_amount_threshold})")
+            return True
 
-        should_challenge = random.random() < challenge_probability
-
-        if should_challenge:
-            logger.info(f"OTP challenge triggered for mandate {mandate.payment_mandate_contents.payment_mandate_id}")
-
-        return should_challenge
+        logger.info(f"No OTP challenge for mandate {mandate.payment_mandate_contents.payment_mandate_id} (amount: ${amount} <= threshold: ${self.otp_amount_threshold})")
+        return False
 
     def generate_otp(self, mandate_id: str) -> str:
         """Generate OTP for payment verification."""

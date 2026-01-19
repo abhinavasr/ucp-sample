@@ -40,6 +40,28 @@ class UCPMerchantClient:
             logger.error(f"Failed to discover UCP capabilities: {e}")
             raise
 
+    def supports_promocodes(self) -> bool:
+        """
+        Check if merchant supports promocodes/coupons based on UCP discovery.
+
+        Returns:
+            True if merchant supports promocodes, False otherwise
+        """
+        if not self.ucp_profile:
+            return False
+
+        try:
+            capabilities = self.ucp_profile.get("ucp", {}).get("capabilities", [])
+            for capability in capabilities:
+                if capability.get("name") == "dev.ucp.shopping.checkout":
+                    extensions = capability.get("extensions", {})
+                    discount_ext = extensions.get("discount", {})
+                    return discount_ext.get("supports_promocodes", False)
+            return False
+        except Exception as e:
+            logger.error(f"Error checking promocode support: {e}")
+            return False
+
     async def search_products(
         self,
         query: Optional[str] = None,

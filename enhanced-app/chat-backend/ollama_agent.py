@@ -28,6 +28,7 @@ class EnhancedBusinessAgent:
         self.carts = {}  # In-memory cart storage: {session_id: [{product_id, name, price, quantity, sku}]}
         self.checkouts = {}  # In-memory checkout sessions
         self.orders = {}  # In-memory order history
+        self.promocode_asked = {}  # Track if promocode was asked for session: {session_id: bool}
         self.system_prompt = """You are a helpful shopping assistant for an online store.
 
 You can help customers:
@@ -36,6 +37,7 @@ You can help customers:
 - Add items to their shopping cart
 - View their shopping cart
 - Help them find what they need
+- Apply promocodes/coupons during checkout (if the merchant supports it)
 
 IMPORTANT INSTRUCTIONS:
 1. When showing the cart, I will provide you with the ACTUAL cart contents - use that information.
@@ -48,6 +50,11 @@ IMPORTANT INSTRUCTIONS:
    - Instead, just provide a brief, friendly message like "Here are some great options for you!" or "I found these products:"
    - The product cards will show all the details (images, prices, descriptions, add-to-cart buttons)
    - Keep your response SHORT and conversational
+7. PROMOCODE/COUPON HANDLING:
+   - When a user wants to checkout and the merchant supports coupons/vouchers, I will add a message asking if they have a promocode.
+   - If the user provides a promocode, acknowledge it and let them know it will be applied during checkout.
+   - DO NOT validate or process promocodes yourself - the merchant backend handles all validation and calculation.
+   - Simply acknowledge the code and confirm it will be checked during payment.
 
 Be friendly, helpful, and enthusiastic about helping customers shop!
 Always be clear when items are successfully added to the cart.
@@ -142,6 +149,23 @@ Keep responses concise when product cards will be shown.
         """Clear the cart for a session."""
         if session_id in self.carts:
             del self.carts[session_id]
+
+    def set_promocode_asked(self, session_id: str):
+        """Mark that promocode question was asked for this session."""
+        self.promocode_asked[session_id] = True
+
+    def should_ask_promocode(self, session_id: str) -> bool:
+        """
+        Check if we should ask about promocode.
+        Returns True if merchant supports promocodes and we haven't asked yet.
+        """
+        if session_id in self.promocode_asked:
+            return False
+        return self.ucp_client.supports_promocodes()
+
+    def get_promocode_prompt(self) -> str:
+        """Get the promocode question prompt."""
+        return "\n\n💳 Do you have a promocode or voucher you'd like to apply to your order? If yes, please provide the code. If not, just let me know and we'll proceed with checkout."
 
     async def process_message(
         self,

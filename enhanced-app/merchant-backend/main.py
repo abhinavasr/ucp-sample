@@ -14,12 +14,12 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-from database import db_manager, Product, UCPRequestLog, AP2RequestLog
+from database import db_manager, Product, UCPRequestLog, AP2RequestLog, Promocode
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 from merchant_payment_agent import MerchantPaymentAgent
-from ap2_types import PaymentMandate as AP2PaymentMandate, PaymentReceipt as AP2PaymentReceipt, OTPVerification
+from ap2_types import PaymentMandate as AP2PaymentMandate, PaymentReceipt as AP2PaymentReceipt, OTPVerification, PaymentReceiptSuccess
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse, JSONResponse
@@ -107,8 +107,8 @@ async def lifespan(app: FastAPI):
     # Startup
     db_manager.init_db()
 
-    # Seed database with sample products if empty
-    await seed_initial_products()
+    # Seed database with sample products and promocodes if empty
+    await seed_initial_data()
 
     # Initialize AP2 Merchant Payment Agent
     ollama_url = os.getenv("OLLAMA_URL", "http://192.168.86.41:11434")
@@ -124,13 +124,14 @@ async def lifespan(app: FastAPI):
     pass
 
 
-async def seed_initial_products():
-    """Seed database with initial products if empty."""
+async def seed_initial_data():
+    """Seed database with initial products and promocodes if empty."""
     async for session in db_manager.get_session():
+        # Seed products
         result = await session.execute(select(Product))
-        existing = result.scalars().first()
+        existing_products = result.scalars().first()
 
-        if not existing:
+        if not existing_products:
             sample_products = [
                 Product(
                     id="PROD-001",
@@ -195,6 +196,55 @@ async def seed_initial_products():
             ]
 
             session.add_all(sample_products)
+            await session.commit()
+
+        # Seed promocodes
+        result = await session.execute(select(Promocode))
+        existing_promocodes = result.scalars().first()
+
+        if not existing_promocodes:
+            from datetime import timedelta
+            now = datetime.utcnow()
+
+            sample_promocodes = [
+                Promocode(
+                    id="PROMO-001",
+                    code="SAVE10",
+                    description="10% off your order",
+                    discount_type="percentage",
+                    discount_value=10.0,
+                    currency="SGD",
+                    valid_from=now,
+                    valid_until=now + timedelta(days=90)
+                ),
+                Promocode(
+                    id="PROMO-002",
+                    code="WELCOME5",
+                    description="$5 off your first order",
+                    discount_type="fixed_amount",
+                    discount_value=5.0,
+                    currency="SGD",
+                    min_purchase_amount=20.0,
+                    usage_limit=100,
+                    valid_from=now,
+                    valid_until=now + timedelta(days=60)
+                ),
+                Promocode(
+                    id="PROMO-003",
+                    code="FLASH20",
+                    description="Flash sale - 20% off (max $10 discount)",
+                    discount_type="percentage",
+                    discount_value=20.0,
+                    currency="SGD",
+                    max_discount_amount=10.0,
+                    min_purchase_amount=25.0,
+                    usage_limit=50,
+                    valid_from=now,
+                    valid_until=now + timedelta(days=7)
+                ),
+            ]
+
+            session.add_all(sample_promocodes)
             await session.commit()
 
 
@@ -430,6 +480,13 @@ async def get_ucp_profile(request: Request):
                             "version": "2026-01-11",
                             "spec": "https://ucp.dev/specification/extensions/ap2_mandate",
                             "schema": "https://ucp.dev/schemas/extensions/ap2_mandate.json"
+                        },
+                        "discount": {
+                            "version": "2026-01-11",
+                            "spec": "https://ucp.dev/specification/discount",
+                            "schema": "https://ucp.dev/schemas/shopping/discount.json",
+                            "supported": True,
+                            "supports_promocodes": True
                         }
                     }
                 }
@@ -727,6 +784,268 @@ async def delete_product(
 
 
 # ============================================================================
+# Merchant Portal - Promocode Management Endpoints
+# ============================================================================
+
+class PromocodeCreate(BaseModel):
+    """Model for creating a new promocode."""
+    code: str
+    description: Optional[str] = None
+    discount_type: str  # "percentage" or "fixed_amount"
+    discount_value: float
+    currency: str = "SGD"
+    min_purchase_amount: Optional[float] = None
+    max_discount_amount: Optional[float] = None
+    usage_limit: Optional[int] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+
+
+class PromocodeUpdate(BaseModel):
+    """Model for updating a promocode."""
+    description: Optional[str] = None
+    discount_value: Optional[float] = None
+    min_purchase_amount: Optional[float] = None
+    max_discount_amount: Optional[float] = None
+    usage_limit: Optional[int] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: Optional[bool] = None
+
+
+class PromocodeResponse(BaseModel):
+    """Promocode response model."""
+    id: str
+    code: str
+    description: Optional[str]
+    discount_type: str
+    discount_value: float
+    currency: str
+    min_purchase_amount: Optional[float]
+    max_discount_amount: Optional[float]
+    usage_limit: Optional[int]
+    usage_count: int
+    valid_from: Optional[datetime]
+    valid_until: Optional[datetime]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@app.get("/api/promocodes", response_model=List[PromocodeResponse])
+async def list_promocodes(
+    skip: int = 0,
+    limit: int = 100,
+    active_only: bool = False,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    List all promocodes.
+    Merchant portal endpoint for viewing promocodes.
+    """
+    query = select(Promocode)
+    if active_only:
+        query = query.where(Promocode.is_active == True)
+
+    query = query.offset(skip).limit(limit)
+    result = await session.execute(query)
+    promocodes = result.scalars().all()
+
+    return [
+        PromocodeResponse(
+            id=p.id,
+            code=p.code,
+            description=p.description,
+            discount_type=p.discount_type,
+            discount_value=p.discount_value,
+            currency=p.currency,
+            min_purchase_amount=p.min_purchase_amount,
+            max_discount_amount=p.max_discount_amount,
+            usage_limit=p.usage_limit,
+            usage_count=p.usage_count,
+            valid_from=p.valid_from,
+            valid_until=p.valid_until,
+            is_active=p.is_active,
+            created_at=p.created_at,
+            updated_at=p.updated_at
+        )
+        for p in promocodes
+    ]
+
+
+@app.get("/api/promocodes/{promocode_id}", response_model=PromocodeResponse)
+async def get_promocode(
+    promocode_id: str,
+    session: AsyncSession = Depends(get_db)
+):
+    """Get a specific promocode by ID."""
+    result = await session.execute(
+        select(Promocode).where(Promocode.id == promocode_id)
+    )
+    promocode = result.scalar_one_or_none()
+
+    if not promocode:
+        raise HTTPException(status_code=404, detail="Promocode not found")
+
+    return PromocodeResponse(
+        id=promocode.id,
+        code=promocode.code,
+        description=promocode.description,
+        discount_type=promocode.discount_type,
+        discount_value=promocode.discount_value,
+        currency=promocode.currency,
+        min_purchase_amount=promocode.min_purchase_amount,
+        max_discount_amount=promocode.max_discount_amount,
+        usage_limit=promocode.usage_limit,
+        usage_count=promocode.usage_count,
+        valid_from=promocode.valid_from,
+        valid_until=promocode.valid_until,
+        is_active=promocode.is_active,
+        created_at=promocode.created_at,
+        updated_at=promocode.updated_at
+    )
+
+
+@app.post("/api/promocodes", response_model=PromocodeResponse, status_code=201)
+async def create_promocode(
+    promocode: PromocodeCreate,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new promocode.
+    Merchant portal endpoint.
+    """
+    # Validate discount type
+    if promocode.discount_type not in ["percentage", "fixed_amount"]:
+        raise HTTPException(status_code=400, detail="discount_type must be 'percentage' or 'fixed_amount'")
+
+    # Check if code already exists
+    result = await session.execute(
+        select(Promocode).where(Promocode.code == promocode.code.upper())
+    )
+    existing = result.scalar_one_or_none()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Promocode already exists")
+
+    # Generate promocode ID
+    promocode_id = f"PROMO-{uuid.uuid4().hex[:8].upper()}"
+
+    db_promocode = Promocode(
+        id=promocode_id,
+        code=promocode.code.upper(),  # Store codes in uppercase
+        description=promocode.description,
+        discount_type=promocode.discount_type,
+        discount_value=promocode.discount_value,
+        currency=promocode.currency,
+        min_purchase_amount=promocode.min_purchase_amount,
+        max_discount_amount=promocode.max_discount_amount,
+        usage_limit=promocode.usage_limit,
+        valid_from=promocode.valid_from,
+        valid_until=promocode.valid_until
+    )
+
+    session.add(db_promocode)
+    await session.commit()
+    await session.refresh(db_promocode)
+
+    return PromocodeResponse(
+        id=db_promocode.id,
+        code=db_promocode.code,
+        description=db_promocode.description,
+        discount_type=db_promocode.discount_type,
+        discount_value=db_promocode.discount_value,
+        currency=db_promocode.currency,
+        min_purchase_amount=db_promocode.min_purchase_amount,
+        max_discount_amount=db_promocode.max_discount_amount,
+        usage_limit=db_promocode.usage_limit,
+        usage_count=db_promocode.usage_count,
+        valid_from=db_promocode.valid_from,
+        valid_until=db_promocode.valid_until,
+        is_active=db_promocode.is_active,
+        created_at=db_promocode.created_at,
+        updated_at=db_promocode.updated_at
+    )
+
+
+@app.put("/api/promocodes/{promocode_id}", response_model=PromocodeResponse)
+async def update_promocode(
+    promocode_id: str,
+    promocode_update: PromocodeUpdate,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Update an existing promocode.
+    Merchant portal endpoint.
+    """
+    result = await session.execute(
+        select(Promocode).where(Promocode.id == promocode_id)
+    )
+    db_promocode = result.scalar_one_or_none()
+
+    if not db_promocode:
+        raise HTTPException(status_code=404, detail="Promocode not found")
+
+    # Update fields
+    update_data = promocode_update.model_dump(exclude_unset=True)
+
+    for field, value in update_data.items():
+        setattr(db_promocode, field, value)
+
+    db_promocode.updated_at = datetime.utcnow()
+
+    await session.commit()
+    await session.refresh(db_promocode)
+
+    return PromocodeResponse(
+        id=db_promocode.id,
+        code=db_promocode.code,
+        description=db_promocode.description,
+        discount_type=db_promocode.discount_type,
+        discount_value=db_promocode.discount_value,
+        currency=db_promocode.currency,
+        min_purchase_amount=db_promocode.min_purchase_amount,
+        max_discount_amount=db_promocode.max_discount_amount,
+        usage_limit=db_promocode.usage_limit,
+        usage_count=db_promocode.usage_count,
+        valid_from=db_promocode.valid_from,
+        valid_until=db_promocode.valid_until,
+        is_active=db_promocode.is_active,
+        created_at=db_promocode.created_at,
+        updated_at=db_promocode.updated_at
+    )
+
+
+@app.delete("/api/promocodes/{promocode_id}")
+async def delete_promocode(
+    promocode_id: str,
+    hard_delete: bool = False,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a promocode (soft delete by default).
+    Merchant portal endpoint.
+    """
+    result = await session.execute(
+        select(Promocode).where(Promocode.id == promocode_id)
+    )
+    db_promocode = result.scalar_one_or_none()
+
+    if not db_promocode:
+        raise HTTPException(status_code=404, detail="Promocode not found")
+
+    if hard_delete:
+        await session.delete(db_promocode)
+    else:
+        db_promocode.is_active = False
+        db_promocode.updated_at = datetime.utcnow()
+
+    await session.commit()
+
+    return {"message": "Promocode deleted successfully", "promocode_id": promocode_id}
+
+
+# ============================================================================
 # UCP Checkout Endpoints (wrapping AP2 Payment)
 # ============================================================================
 
@@ -743,11 +1062,13 @@ class CheckoutSessionCreate(BaseModel):
     line_items: List[LineItem]
     buyer_email: str
     currency: str = "SGD"
+    promocode: Optional[str] = None  # Optional promocode to apply
 
 class CheckoutSessionUpdate(BaseModel):
     """Update checkout session request."""
     payment_mandate: Optional[Dict[str, Any]] = None
     user_signature: Optional[str] = None
+    promocode: Optional[str] = None  # Optional promocode to apply/update
 
 class CheckoutSessionResponse(BaseModel):
     """Checkout session response."""
@@ -770,11 +1091,43 @@ async def create_checkout_session(
     """
     UCP: Create checkout session.
     Returns checkout session with status 'incomplete'.
+    Supports optional promocode for discounts.
     """
     session_id = f"cs_{uuid.uuid4().hex[:16]}"
 
-    # Calculate totals
+    # Calculate subtotal
     subtotal = sum(item.price * item.quantity for item in checkout.line_items)
+
+    # Initialize totals
+    discount = 0.0
+    promocode_applied = None
+    promocode_error = None
+
+    # Apply promocode if provided
+    if checkout.promocode:
+        code_upper = checkout.promocode.upper()
+        result = await session.execute(
+            select(Promocode).where(Promocode.code == code_upper)
+        )
+        promo = result.scalar_one_or_none()
+
+        if promo:
+            is_valid, error_msg = promo.is_valid(purchase_amount=subtotal)
+            if is_valid:
+                discount = promo.calculate_discount(subtotal)
+                promocode_applied = {
+                    "code": promo.code,
+                    "description": promo.description,
+                    "discount_type": promo.discount_type,
+                    "discount_value": promo.discount_value,
+                    "discount_amount": discount
+                }
+            else:
+                promocode_error = error_msg
+        else:
+            promocode_error = "Invalid promocode"
+
+    total = max(0, subtotal - discount)
 
     checkout_data = {
         "id": session_id,
@@ -783,12 +1136,18 @@ async def create_checkout_session(
         "buyer_email": checkout.buyer_email,
         "totals": {
             "subtotal": subtotal,
+            "discount": discount,
             "tax": 0.0,
-            "total": subtotal,
+            "total": total,
             "currency": checkout.currency
         },
         "created_at": datetime.utcnow().isoformat()
     }
+
+    if promocode_applied:
+        checkout_data["promocode"] = promocode_applied
+    if promocode_error:
+        checkout_data["promocode_error"] = promocode_error
 
     checkout_sessions[session_id] = checkout_data
 
@@ -816,16 +1175,61 @@ async def get_checkout_session(
 async def update_checkout_session(
     request: Request,
     session_id: str,
-    update: CheckoutSessionUpdate
+    update: CheckoutSessionUpdate,
+    session: AsyncSession = Depends(get_db)
 ):
     """
-    UCP: Update checkout session with payment mandate.
+    UCP: Update checkout session with payment mandate or promocode.
     Transitions status to 'ready_for_complete' when payment mandate is provided.
     """
     if session_id not in checkout_sessions:
         raise HTTPException(status_code=404, detail="Checkout session not found")
 
     checkout_data = checkout_sessions[session_id]
+
+    # Update promocode if provided
+    if update.promocode:
+        code_upper = update.promocode.upper()
+        result = await session.execute(
+            select(Promocode).where(Promocode.code == code_upper)
+        )
+        promo = result.scalar_one_or_none()
+
+        # Recalculate totals
+        subtotal = checkout_data["totals"]["subtotal"]
+        discount = 0.0
+        promocode_applied = None
+        promocode_error = None
+
+        if promo:
+            is_valid, error_msg = promo.is_valid(purchase_amount=subtotal)
+            if is_valid:
+                discount = promo.calculate_discount(subtotal)
+                promocode_applied = {
+                    "code": promo.code,
+                    "description": promo.description,
+                    "discount_type": promo.discount_type,
+                    "discount_value": promo.discount_value,
+                    "discount_amount": discount
+                }
+            else:
+                promocode_error = error_msg
+        else:
+            promocode_error = "Invalid promocode"
+
+        total = max(0, subtotal - discount)
+
+        checkout_data["totals"]["discount"] = discount
+        checkout_data["totals"]["total"] = total
+
+        if promocode_applied:
+            checkout_data["promocode"] = promocode_applied
+            # Remove error if it was previously set
+            checkout_data.pop("promocode_error", None)
+        if promocode_error:
+            checkout_data["promocode_error"] = promocode_error
+            # Remove promocode if it was previously set
+            checkout_data.pop("promocode", None)
 
     # Update with payment mandate if provided
     if update.payment_mandate:
@@ -848,11 +1252,13 @@ async def update_checkout_session(
 async def complete_checkout_session(
     request: Request,
     session_id: str,
-    otp_code: Optional[str] = None
+    otp_code: Optional[str] = None,
+    session: AsyncSession = Depends(get_db)
 ):
     """
     UCP: Complete checkout session.
     Processes AP2 payment mandate and returns final receipt.
+    Increments promocode usage count if payment is successful.
     """
     if session_id not in checkout_sessions:
         raise HTTPException(status_code=404, detail="Checkout session not found")
@@ -903,6 +1309,17 @@ async def complete_checkout_session(
         # Process payment
         receipt = payment_agent.process_payment(mandate_obj)
 
+    # If payment successful and promocode was applied, increment usage count
+    if isinstance(receipt.payment_status, PaymentReceiptSuccess) and "promocode" in checkout_data:
+        promocode_code = checkout_data["promocode"]["code"]
+        result = await session.execute(
+            select(Promocode).where(Promocode.code == promocode_code)
+        )
+        promo = result.scalar_one_or_none()
+        if promo:
+            promo.usage_count += 1
+            await session.commit()
+
     # Update checkout session with completion
     checkout_data["status"] = "complete"
     checkout_data["receipt"] = receipt.dict()
@@ -922,6 +1339,63 @@ async def complete_checkout_session(
 def get_payment_agent() -> MerchantPaymentAgent:
     """Get payment agent instance."""
     return app.state.payment_agent
+
+
+# ============================================================================
+# Settings API Endpoints
+# ============================================================================
+
+class MerchantSettings(BaseModel):
+    """Merchant settings response."""
+    merchant_name: str
+    merchant_id: str
+    merchant_url: str
+    otp_enabled: bool
+    otp_amount_threshold: float
+
+
+class MerchantSettingsUpdate(BaseModel):
+    """Merchant settings update request."""
+    otp_enabled: Optional[bool] = None
+    otp_amount_threshold: Optional[float] = None
+
+
+@app.get("/api/settings", response_model=MerchantSettings)
+async def get_settings():
+    """Get current merchant settings."""
+    payment_agent = app.state.payment_agent
+
+    return MerchantSettings(
+        merchant_name=os.getenv("MERCHANT_NAME", "Enhanced Business Store"),
+        merchant_id=os.getenv("MERCHANT_ID", "merchant-001"),
+        merchant_url=os.getenv("MERCHANT_URL", "http://localhost:8453"),
+        otp_enabled=payment_agent.otp_enabled,
+        otp_amount_threshold=payment_agent.otp_amount_threshold
+    )
+
+
+@app.put("/api/settings")
+async def update_settings(settings: MerchantSettingsUpdate):
+    """
+    Update merchant settings.
+    Note: These changes are in-memory only and will reset on restart.
+    For persistent changes, update the .env file.
+    """
+    payment_agent = app.state.payment_agent
+
+    if settings.otp_enabled is not None:
+        payment_agent.otp_enabled = settings.otp_enabled
+        logger.info(f"OTP enabled setting updated to: {settings.otp_enabled}")
+
+    if settings.otp_amount_threshold is not None:
+        payment_agent.otp_amount_threshold = settings.otp_amount_threshold
+        logger.info(f"OTP amount threshold updated to: ${settings.otp_amount_threshold}")
+
+    return {
+        "message": "Settings updated successfully (in-memory only)",
+        "otp_enabled": payment_agent.otp_enabled,
+        "otp_amount_threshold": payment_agent.otp_amount_threshold
+    }
 
 
 # ============================================================================

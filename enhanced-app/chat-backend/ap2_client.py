@@ -107,7 +107,8 @@ class AP2Client:
     async def create_checkout_session(
         self,
         cart_items: list,
-        buyer_email: str
+        buyer_email: str,
+        promocode: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create UCP checkout session.
@@ -115,25 +116,31 @@ class AP2Client:
         Args:
             cart_items: List of cart items
             buyer_email: Buyer's email
+            promocode: Optional promocode/coupon code
 
         Returns:
             Checkout session data
         """
         try:
+            payload = {
+                "line_items": cart_items,
+                "buyer_email": buyer_email,
+                "currency": "SGD"
+            }
+
+            if promocode:
+                payload["promocode"] = promocode
+
             response = await self.client.post(
                 f"{self.merchant_url}/ucp/v1/checkout-sessions",
-                json={
-                    "line_items": cart_items,
-                    "buyer_email": buyer_email,
-                    "currency": "SGD"
-                },
+                json=payload,
                 headers={"Content-Type": "application/json"}
             )
 
             response.raise_for_status()
             session_data = response.json()
 
-            logger.info(f"Created checkout session: {session_data.get('id')}")
+            logger.info(f"Created checkout session: {session_data.get('id')} with promocode: {promocode if promocode else 'none'}")
             return session_data
 
         except httpx.HTTPError as e:
