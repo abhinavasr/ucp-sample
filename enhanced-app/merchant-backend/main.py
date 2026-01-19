@@ -3,7 +3,7 @@ Merchant Backend - UCP Product Service
 Exposes product catalog via UCP-compliant REST API
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -1256,7 +1256,7 @@ async def update_checkout_session(
 async def complete_checkout_session(
     request: Request,
     session_id: str,
-    otp_code: Optional[str] = None,
+    otp_code: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_db)
 ):
     """
@@ -1269,8 +1269,9 @@ async def complete_checkout_session(
 
     checkout_data = checkout_sessions[session_id]
 
-    if checkout_data["status"] != "ready_for_complete":
-        raise HTTPException(status_code=400, detail="Checkout session not ready for completion")
+    # Allow completion if status is ready_for_complete or requires_escalation (OTP flow)
+    if checkout_data["status"] not in ["ready_for_complete", "requires_escalation"]:
+        raise HTTPException(status_code=400, detail=f"Checkout session not ready for completion (status: {checkout_data['status']})")
 
     # Get payment mandate from checkout session
     payment_mandate = checkout_data.get("payment_mandate")
