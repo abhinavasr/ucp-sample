@@ -38,6 +38,11 @@ A production-ready AI-powered shopping assistant with UCP product discovery and 
             *   ✅ OTP challenge for high-risk transactions (10-30% probability)
             *   🎯 Complete payment flow: Registration → Cart → Checkout → Passkey Auth → Payment Receipt
             *   🛡️ Fixed test card: 5123 1212 2232 5678 (Mastercard)
+        *   🗄️ Database Management
+            *   📊 Reset Database feature accessible from chat menu
+            *   🔄 Clears all user data, payment cards, mandates, and transactions
+            *   ⚠️ Confirmation dialog to prevent accidental data loss
+            *   📱 Available on both desktop and mobile interfaces
         *   💾 Persistent SQLite databases (separate for products and credentials)
         *   🎨 Beautiful modern UI with React and Tailwind CSS
         *   🔧 RESTful API with FastAPI

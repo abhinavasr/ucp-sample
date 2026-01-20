@@ -282,6 +282,9 @@ GET /api/payment/cards/default     # Get default payment card
 POST /api/payment/prepare-checkout # Create UCP session + AP2 mandate
 POST /api/payment/confirm-checkout # Sign mandate, complete UCP checkout
 POST /api/payment/verify-otp       # Complete checkout with OTP
+
+# Database Management
+POST /api/database/reset           # Reset database (clear all user data)
 ```
 
 #### Merchant Backend (UCP Server + AP2 Merchant Agent)
@@ -692,6 +695,13 @@ For complete Mastercard integration documentation, see:
 
 If you encounter database errors (like "table has no column"), the database schema may be outdated:
 
+**Option 1: Use the Reset Database feature (recommended for development)**
+1. Visit http://localhost:8450
+2. Click "Reset DB" button in the navigation menu
+3. Confirm the action
+4. This will clear all user data, payment cards, mandates, and transactions
+
+**Option 2: Manually delete database files**
 ```bash
 # Stop services
 ./stop-split.sh
@@ -813,6 +823,7 @@ The chat backend will:
 - 🔑 **Encrypted card storage** with Fernet encryption
 - 🚪 **Logout functionality** with state cleanup
 - 💬 **Payment confirmation** shown in chat history
+- 🗄️ **Database reset functionality** accessible from chat menu (clears all user data, cards, mandates, and transactions)
 
 ### Merchant Backend Features
 - 📦 **Full CRUD product management** via REST API

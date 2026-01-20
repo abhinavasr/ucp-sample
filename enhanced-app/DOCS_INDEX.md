@@ -79,6 +79,7 @@ Complete documentation for the Enhanced Business Agent with UCP, AP2, and Master
 ### Database
 - [MASTERCARD_INTEGRATION.md](MASTERCARD_INTEGRATION.md#database-schema-changes) - Schema Changes
 - [README.md](README.md#-chat-backend-features) - Database Overview
+- [README.md](README.md#troubleshooting) - Database Reset Feature
 
 ## 🔍 Quick Links
 
@@ -115,6 +116,18 @@ Complete documentation for the Enhanced Business Agent with UCP, AP2, and Master
 - `merchant-backend/` - UCP Server + AP2 Merchant Agent
 
 ## 🎯 Common Tasks
+
+### Reset Database (Development)
+**Option 1: Using the UI (Recommended)**
+1. Visit http://localhost:8450
+2. Click "Reset DB" button in the navigation menu
+3. Confirm the action
+
+**Option 2: Using the API**
+```bash
+curl -X POST http://localhost:8452/api/database/reset
+```
+📖 [Troubleshooting Guide](README.md#troubleshooting)
 
 ### Enable Mastercard Integration
 ```bash
